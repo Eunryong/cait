@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "/Users/eunryong/develop/c_tools/cait check" }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "/Users/eunryong/develop/c_tools/cait check --done" }
+        ]
+      }
+    ]
+  }
+}

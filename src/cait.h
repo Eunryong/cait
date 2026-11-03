@@ -1,0 +1,43 @@
+#ifndef CAIT_H
+#define CAIT_H
+
+/* argv are the arguments after the subcommand name */
+int cmd_report(int argc, char **argv);
+int cmd_level(int argc, char **argv);
+int cmd_watch(int argc, char **argv);
+int cmd_stop(int argc, char **argv);
+int cmd_check(int argc, char **argv);
+int cmd_log(int argc, char **argv);
+
+#include <stdio.h>
+#include <time.h>
+
+typedef struct {
+	time_t time;
+	const char *agent, *files, *status, *text;
+	long added, removed;	/* -1 when unknown */
+} rec_t;
+
+/* shared by feed.c and panel.c */
+void path_in_dir(char *out, size_t size, const char *name);
+int ensure_dir(void);
+int parse_rec(char *line, rec_t *r);
+int stop_add(const char *agent, const char *reason);
+int cmd_gui(int argc, char **argv);
+void rec_key(time_t t, const char *agent, const char *files, char *out, size_t size);
+int cmd_revert(int argc, char **argv);
+int cmd_tell(int argc, char **argv);
+int cmd_inbox(int argc, char **argv);
+int cmd_brief(int argc, char **argv);
+int cmd_status(int argc, char **argv);
+int cmd_panel(int argc, char **argv);
+
+/* what one agent is doing now; state: working quiet done stopped reported */
+typedef struct {
+	char name[128], id[128], tool[128], target[512], task[512], text[512], state[16];
+	long first, last, last_report, idle;
+	int calls, done, reports, seen_act;
+} agent_info_t;
+int status_load(agent_info_t *out, int max);
+
+#endif
