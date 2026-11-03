@@ -38,7 +38,7 @@ static int agent_rank(const agent_info_t *a)
 {
 	if (waiting_for(a->name))
 		return 0;
-	if (strcmp(a->state, "stopped") == 0 || (strcmp(a->state, "done") == 0 && (a->unreported || !a->final)))
+	if (strcmp(a->state, "stopped") == 0 || (strcmp(a->state, "done") == 0 && (a->unreported || !a->final_ok)))
 		return 1;
 	if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
 		return 2;
@@ -354,8 +354,8 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 			col = "33";
 			label = "잠시 멈춤";
 		} else if (strcmp(a->state, "done") == 0) {
-			col = a->final && !a->unreported ? "2" : "33";
-			label = a->unreported || !a->final ? "확인 필요" : "완료";
+			col = a->final_ok && !a->unreported ? "2" : "33";
+			label = a->unreported || !a->final_ok ? "확인 필요" : "완료";
 		} else if (strcmp(a->state, "stopped") == 0 || is_stopped(v, a->name)) {
 			col = "31";
 			label = "중단됨";
@@ -373,7 +373,7 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 			activity_label(a->tool, a->target, what, sizeof(what));
 		else if (a->unreported)
 			snprintf(what, sizeof(what), "마지막 보고 뒤 수정 %d건이 보고되지 않았습니다", a->unreported);
-		else if (strcmp(a->state, "done") == 0 && !a->final)
+		else if (strcmp(a->state, "done") == 0 && !a->final_ok)
 			snprintf(what, sizeof(what), "끝났지만 완료 보고가 오지 않았습니다");
 		else
 			snprintf(what, sizeof(what), "%s", a->text);

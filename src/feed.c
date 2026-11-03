@@ -884,6 +884,7 @@ int status_load(agent_info_t *st, int max)
 		char sname[256], reason[256];
 		FILE *b;
 
+		a->final_ok = a->final || (a->reports == 0 && a->unreported == 0);
 		a->idle = (long)now - (a->seen_act ? a->last : a->last_report);
 		if (a->idle < 0)
 			a->idle = 0;
@@ -957,7 +958,7 @@ int cmd_status(int argc, char **argv)
 		}
 		printf("%s\t%s\treports %d\ttool calls %d\tidle %lds\n", a->name, a->state, a->reports, a->calls,
 		       a->idle);
-		if (a->seen_act && a->done)
+		if (a->seen_act && a->done && (a->final || !a->final_ok))
 			printf("  final report: %s\n", a->final ? "delivered" : "NOT delivered");
 		if (a->unreported)
 			printf("  unreported edits: %d (edited after the last report)\n", a->unreported);
@@ -2182,6 +2183,8 @@ static const char *status_label(const char *status)
 		return "\xec\x82\xad\xec\xa0\x9c\xeb\x90\xa8";			/* 삭제됨 */
 	if (strcmp(status, "reverted") == 0)
 		return "\xeb\x90\x98\xeb\x8f\x8c\xeb\xa6\xbc";			/* 되돌림 */
+	if (strcmp(status, "final") == 0)
+		return "\xec\x99\x84\xeb\xa3\x8c \xeb\xb3\xb4\xea\xb3\xa0";		/* 완료 보고 */
 	return "\xeb\xb3\x80\xea\xb2\xbd\xeb\x90\xa8";				/* 변경됨 */
 }
 
@@ -2248,7 +2251,9 @@ static void show_rec(const rec_t *r, int color, int do_notify)
 	strftime(hms, sizeof(hms), "%H:%M:%S", &tm);
 
 	printf("%s%s%s  %s%s%s  ", dim, hms, reset, ac, r->agent, reset);
-	if (nfiles == 1) {
+	if (strcmp(r->status, "final") == 0) {
+		printf("%s", status_label(r->status));
+	} else if (nfiles == 1) {
 		printf("%s %s", status_label(r->status), short_path(r->files, cwd, cwdlen));
 	} else {
 		printf("%d\xea\xb0\x9c \xed\x8c\x8c\xec\x9d\xbc", nfiles);	/* N개 파일 */
@@ -2429,7 +2434,7 @@ void put_json_rec(FILE *o, const rec_t *r)
 	fprintf(o, "{\"id\":\"%s\",\"time\":%ld,\"agent\":", key, (long)r->time);
 	put_json_string(o, r->agent, strlen(r->agent));
 	fprintf(o, ",\"files\":[");
-	for (;;) {
+	for (; *s;) {
 		const char *e = strchr(s, FILE_SEP);
 
 		put_json_string(o, s, e ? (size_t)(e - s) : strlen(s));

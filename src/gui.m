@@ -109,7 +109,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 			doing = [NSString stringWithUTF8String:say];
 		}
 		by[name] = @{ @"state" : state, @"doing" : doing, @"idle" : @(st[i].idle), @"hidden" : @(st[i].hidden),
-			@"unrep" : @(st[i].unreported), @"final" : @(st[i].final) };
+			@"unrep" : @(st[i].unreported), @"final" : @(st[i].final_ok) };
 		[order addObject:name];
 	}
 	free(st);
