@@ -26,7 +26,7 @@
 @implementation Agent
 @end
 
-@interface App : NSObject <NSApplicationDelegate, NSTableViewDataSource, NSTableViewDelegate>
+@interface App : NSObject <NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate>
 @property NSWindow *win;
 @property NSTableView *agentTable, *reportTable;
 @property NSTextField *header;
@@ -49,6 +49,7 @@
 @property NSTextField *emptyLabel;
 @property NSMutableDictionary<NSString *, NSString *> *permInfo;	/* agent name -> its first waiting request */
 @property BOOL allStop;
+@property NSMutableSet<NSString *> *seen;	/* "needs a look" agents the user has already looked at */
 @end
 
 static NSData *read_dir_file(const char *name)
@@ -155,6 +156,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 					     backing:NSBackingStoreBuffered
 					       defer:NO];
 	_win.title = @"cait";
+	_win.delegate = self;
 	[_win center];
 	root = _win.contentView;
 
@@ -602,7 +604,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
  */
 - (void)reloadAgents:(NSString *)selName
 {
-	NSInteger n[4] = { 0, 0, 0, 0 }, att;
+	NSInteger n[4] = { 0, 0, 0, 0 };
 	NSMutableArray<NSString *> *parts = [NSMutableArray array];
 	NSUInteger ai = NSNotFound;
 
@@ -637,10 +639,37 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	if (n[3])
 		[parts addObject:[NSString stringWithFormat:@"완료 %ld", (long)n[3]]];
 	_counts = [[parts componentsJoinedByString:@"  ·  "] stringByAppendingString:_allStop ? @"   ⛔ 전체 중단 요청됨" : @""];
-	att = n[0] + n[1];
+	[self updateBadge];
+	[self updateHeader];
+}
+
+static NSString *seen_key(Agent *a)
+{
+	return [NSString stringWithFormat:@"%@:%ld:%d", a.name, (long)a.unreported, a.final];
+}
+
+/* Looking at an agent in the window counts as having seen what needs a look. */
+- (void)markSeen
+{
+	Agent *a = [self selectedAgent];
+
+	if (!_seen)
+		_seen = [NSMutableSet set];
+	if (a && a.rank == 1 && _win.isKeyWindow)
+		[_seen addObject:seen_key(a)];
+}
+
+/* Dock badge and title: what waits for an answer, plus what has not been looked at yet. */
+- (void)updateBadge
+{
+	NSInteger att = 0;
+
+	[self markSeen];
+	for (Agent *a in _agents)
+		if (a.rank == 0 || (a.rank == 1 && ![_seen containsObject:seen_key(a)]))
+			att++;
 	NSApp.dockTile.badgeLabel = att ? [NSString stringWithFormat:@"%ld", (long)att] : nil;
 	_win.title = att ? [NSString stringWithFormat:@"cait — 확인할 것 %ld", (long)att] : @"cait";
-	[self updateHeader];
 }
 
 /* Summary on the first line; on the second, what the selected agent was asked and what it does now. */
@@ -718,6 +747,12 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		return;
 	}
 	[self showSelectedAgentReports:nil];
+	[self updateBadge];
+}
+
+- (void)windowDidBecomeKey:(NSNotification *)n
+{
+	[self updateBadge];
 }
 
 - (void)alert:(NSString *)title info:(NSString *)info
