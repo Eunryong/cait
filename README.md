@@ -81,6 +81,9 @@
 ### 허락 요청을 화면에서 처리 (Claude Code 전용)
 `PermissionRequest` 훅(`cait check --permission`)이 Claude Code가 사용자에게 허락을 묻기 직전에 그 질문을 `perm/`에 올리고 최대 40초(`CAIT_PERM_WAIT`로 조절) 기다린다. 창은 확인창을 띄우고 패널은 맨 위에 표시하며, 누른 답이 훅을 통해 그대로 돌아간다. 답이 없으면 훅은 아무것도 출력하지 않아 원래 확인창이 뜬다. 서브에이전트가 스스로 승인하지 못하도록 훅이 서브에이전트의 `cait perm`과 `perm/` 접근을 막는다. 훅이 받은 마지막 요청은 `perm/last-request.json`에 남는다. 이 훅이 서브에이전트의 허락 요청에도 불리는지는 Claude Code 문서에 명시되어 있지 않다.
 
+### 위험한 호출은 화면에서 승인받기 (가드, Claude Code 전용)
+`PermissionRequest` 훅은 Claude Code가 실제로 확인창을 띄울 때만 불린다. 권한 모드가 `auto`처럼 확인 없이 통과시키면 불리지 않는다. 그래서 cait는 서브에이전트의 도구 호출 직전(`PreToolUse` 훅)에 호출 내용을 검사한다. 명령이나 파일 경로에 `rm -rf`, `git push`, `curl `, `sudo ` 같은 문구가 들어 있으면 호출을 멈추고 창에 승인 요청을 올린다. 허용하면 그대로 진행하고, 거부하거나 120초(`CAIT_GUARD_WAIT`) 안에 답이 없으면 막는다. 가드는 안전 쪽으로 닫히며, 에이전트에게는 사유와 "다시 시도하지 말라"는 메시지가 간다. 문구 목록은 `cait guard`로 보고 `cait guard add 문구`로 늘린다(`~/.cait/guard` 파일을 직접 고쳐도 된다). 메인 에이전트의 호출은 검사하지 않는다. 문구 포함 검사라 우회될 수 있어서 방어선이 아니라 확인 장치다.
+
 ### 강제 중단 (Claude Code 전용, 선택)
 보고 시점 중단은 에이전트가 따라 줘야 한다. Claude Code에서는 `PreToolUse` 훅으로 더 확실하게 막을 수 있다. [.claude/settings.json](.claude/settings.json)이 모든 도구 호출 직전에 `cait check`를 실행하고, 전체 중단(`cait stop`, `--agent` 없이)이 걸려 있으면 **서브에이전트의** 도구 호출을 거부한다. 메인 에이전트와 `cait` 명령은 막지 않는다. `cait stop --agent 이름`은 그 이름의 에이전트만 막는다. 훅이 에이전트가 `cait report --agent 이름`을 실행할 때 `agent_id`와 이름을 짝지어 `agents` 파일에 기억해 두기 때문이다. 훅이 없어도 cait는 동작한다.
 

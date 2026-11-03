@@ -48,5 +48,6 @@ typedef struct {
 int perm_load(perm_t *out, int max);
 int perm_answer(const char *id, int allow, const char *msg);
 int cmd_perm(int argc, char **argv);
+int cmd_guard(int argc, char **argv);
 
 #endif

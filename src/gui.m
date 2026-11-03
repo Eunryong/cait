@@ -33,7 +33,13 @@
 @property NSMutableArray<Report *> *all;
 @property NSData *lastFeed, *lastStop;
 @property BOOL busy;
-@property NSMutableSet<NSString *> *asked;	/* permission requests already put on screen */
+@property NSMutableSet<NSString *> *asked;	/* permission requests already announced */
+@property NSView *permBar;	/* shown above the tables while an agent waits for the user's OK */
+@property NSTextField *permLabel;
+@property NSString *permId;
+@property NSMutableDictionary<NSString *, NSNumber *> *pendingBy;	/* agent name -> requests waiting */
+@property NSString *permShown;
+@property NSScrollView *agentScroll, *reportScroll;
 @end
 
 static NSData *read_dir_file(const char *name)
@@ -76,7 +82,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		NSString *doing = @"";
 
 		if (st[i].tool[0] && ![state isEqualToString:@"done"])
-			doing = [NSString stringWithFormat:@"%s %s", st[i].tool, st[i].target];
+			doing = [NSString stringWithFormat:@"%@ %@", [NSString stringWithUTF8String:st[i].tool],
+						       [NSString stringWithUTF8String:st[i].target]];
 		by[name] = @{ @"state" : state, @"doing" : doing, @"idle" : @(st[i].idle),
 			@"unrep" : @(st[i].unreported), @"final" : @(st[i].final) };
 		[order addObject:name];
@@ -142,6 +149,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	as.borderType = NSBezelBorder;
 	as.autoresizingMask = NSViewHeightSizable;
 	[root addSubview:as];
+	_agentScroll = as;
 
 	_reportTable = [self tableWithColumns:@[ @[ @"when", @"시간", @70 ], @[ @"status", @"상태", @80 ],
 						 @[ @"file", @"파일", @140 ], @[ @"counts", @"변경", @70 ],
@@ -152,6 +160,32 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	rs.borderType = NSBezelBorder;
 	rs.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 	[root addSubview:rs];
+	_reportScroll = rs;
+
+	_permBar = [[NSView alloc] initWithFrame:NSMakeRect(320, 470, 528, 46)];
+	_permBar.wantsLayer = YES;
+	_permBar.layer.backgroundColor = [[NSColor.systemYellowColor colorWithAlphaComponent:0.28] CGColor];
+	_permBar.layer.cornerRadius = 6;
+	_permBar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+	_permBar.hidden = YES;
+	_permLabel = [NSTextField labelWithString:@""];
+	_permLabel.frame = NSMakeRect(10, 4, 340, 38);
+	_permLabel.maximumNumberOfLines = 2;
+	_permLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
+	_permLabel.autoresizingMask = NSViewWidthSizable;
+	[_permBar addSubview:_permLabel];
+	{
+		NSButton *ok = [NSButton buttonWithTitle:@"허용" target:self action:@selector(allowPerm:)];
+		NSButton *no = [NSButton buttonWithTitle:@"거부" target:self action:@selector(denyPerm:)];
+
+		ok.frame = NSMakeRect(528 - 80 - 10, 9, 80, 28);
+		no.frame = NSMakeRect(528 - 160 - 16, 9, 80, 28);
+		ok.bezelColor = NSColor.systemGreenColor;
+		ok.autoresizingMask = no.autoresizingMask = NSViewMinXMargin;
+		[_permBar addSubview:no];
+		[_permBar addSubview:ok];
+	}
+	[root addSubview:_permBar];
 
 	[root addSubview:[self button:@"에이전트 중지" x:12 w:110 action:@selector(stopAgent:)]];
 	[root addSubview:[self button:@"중지 해제" x:128 w:80 action:@selector(clearStops:)]];
@@ -172,35 +206,100 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	[self refresh];
 }
 
-/* An agent wants to run something that needs the user's OK: ask, and hand the answer to its hook. */
-- (void)askPermissions
+/*
+ * An agent wants to run something that needs the user's OK. Its row in the agent list
+ * gets a warning, and the request is shown, with allow/deny, above that agent's reports.
+ */
+- (void)updatePerm
 {
 	perm_t *q = calloc(8, sizeof(*q));
 	int n = q ? perm_load(q, 8) : 0;
+	NSMutableDictionary<NSString *, NSNumber *> *by = [NSMutableDictionary dictionary];
+	NSString *sel = [self selectedAgent].name, *newcomer = nil;
+	NSInteger sh = -1;
+	CGFloat h = _win.contentView.bounds.size.height, w = _win.contentView.bounds.size.width, top = h - 40;
 
 	if (!_asked)
 		_asked = [NSMutableSet set];
 	for (int i = 0; i < n; i++) {
+		NSString *name = [NSString stringWithUTF8String:q[i].agent];
 		NSString *rid = [NSString stringWithUTF8String:q[i].id];
-		NSAlert *al;
-		NSModalResponse r;
 
-		if ([_asked containsObject:rid])
-			continue;
-		[_asked addObject:rid];
-		al = [NSAlert new];
-		al.messageText = [NSString stringWithFormat:@"%s 에이전트가 승인을 요청합니다", q[i].agent];
-		al.informativeText = [NSString stringWithFormat:@"%s\n%s\n\n허용하면 바로 실행됩니다. 답하지 않으면 Claude Code의 확인창이 대신 뜹니다.",
-							       q[i].tool, q[i].detail];
-		al.alertStyle = NSAlertStyleWarning;
-		[al addButtonWithTitle:@"허용"];
-		[al addButtonWithTitle:@"거부"];
-		[NSApp activateIgnoringOtherApps:YES];
-		r = [al runModal];
-		perm_answer(q[i].id, r == NSAlertFirstButtonReturn, r == NSAlertFirstButtonReturn ? "" : "");
-		break;	/* one at a time; the next shows on the next tick */
+		by[name] = @([by[name] integerValue] + 1);
+		if (sel && [name isEqualToString:sel] && sh < 0)
+			sh = i;
+		if (![_asked containsObject:rid]) {
+			[_asked addObject:rid];
+			if (!newcomer)
+				newcomer = name;
+		}
 	}
+	if (newcomer) {	/* a new question: bring the window up and show whose it is */
+		[NSApp activateIgnoringOtherApps:YES];
+		[_win makeKeyAndOrderFront:nil];
+		[NSApp requestUserAttention:NSCriticalRequest];
+		for (NSUInteger i = 0; i < _agents.count; i++)
+			if ([_agents[i].name isEqualToString:newcomer] && ![newcomer isEqualToString:sel]) {
+				_busy = YES;
+				[_agentTable selectRowIndexes:[NSIndexSet indexSetWithIndex:i] byExtendingSelection:NO];
+				[self showSelectedAgentReports:nil];
+				_busy = NO;
+				sel = newcomer;
+				sh = -1;
+				for (int k = 0; k < n; k++)
+					if ([[NSString stringWithUTF8String:q[k].agent] isEqualToString:sel]) {
+						sh = k;
+						break;
+					}
+			}
+	}
+	if (!_pendingBy || ![_pendingBy isEqualToDictionary:by]) {
+		NSInteger row = _agentTable.selectedRow;
+
+		_pendingBy = by;
+		_busy = YES;
+		[_agentTable reloadData];
+		if (row >= 0 && row < (NSInteger)_agents.count)
+			[_agentTable selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+		_busy = NO;
+	}
+
+	_permBar.hidden = sh < 0;
+	if (sh >= 0) {
+		NSString *agent = [NSString stringWithUTF8String:q[sh].agent];
+		NSString *tool = [NSString stringWithUTF8String:q[sh].tool];
+		NSString *detail = [NSString stringWithUTF8String:q[sh].detail];
+		NSInteger mine = [by[agent] integerValue];
+
+		_permId = [NSString stringWithUTF8String:q[sh].id];
+		_permLabel.stringValue = [NSString stringWithFormat:@"⚠ 이 에이전트가 승인을 요청합니다%@\n%@  %@",
+								    mine > 1 ? [NSString stringWithFormat:@" (대기 %ld건)", (long)mine] : @"",
+								    tool, detail];
+	} else {
+		_permId = nil;
+	}
+	_permBar.frame = NSMakeRect(320, top - 46, w - 332, 46);
+	_agentScroll.frame = NSMakeRect(12, 44, 300, top - 44);
+	_reportScroll.frame = NSMakeRect(320, 44, w - 332, top - 44 - (sh >= 0 ? 52 : 0));
 	free(q);
+}
+
+- (void)answerPerm:(BOOL)allow
+{
+	if (!_permId)
+		return;
+	perm_answer([_permId UTF8String], allow, "");
+	[self updatePerm];
+}
+
+- (void)allowPerm:(id)s
+{
+	[self answerPerm:YES];
+}
+
+- (void)denyPerm:(id)s
+{
+	[self answerPerm:NO];
 }
 
 /* What agents are doing changes without touching the feed: re-read it every second. */
@@ -213,7 +312,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 
 	if (_busy)
 		return;
-	[self askPermissions];
+	[self updatePerm];
 	for (NSString *n in order) {
 		BOOL known = NO;
 
@@ -472,6 +571,10 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		[self alert:@"되돌릴 수 없는 항목입니다" info:@"이 항목은 이미 되돌린 기록입니다."];
 		return;
 	}
+	if ([r.status isEqualToString:@"완료 보고"]) {
+		[self alert:@"되돌릴 변경이 없습니다" info:@"완료 보고는 에이전트가 마지막에 남긴 요약이라 파일 변경이 없습니다. 되돌리려면 변경이 있는 보고를 고르세요."];
+		return;
+	}
 	plan = run_cait(@[ @"revert", @"--id", r.rid, @"--dry-run" ], &st);
 	a = [NSAlert new];
 	a.messageText = [NSString stringWithFormat:@"이 보고를 되돌릴까요?\n%@", r.text];
@@ -544,8 +647,13 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 			f.stringValue = [NSString stringWithFormat:@"%ld", (long)a.count];
 		} else {
 			NSString *st = a.state ?: @"";
+			NSInteger waiting = [_pendingBy[a.name] integerValue];
 
-			if (a.stopped) {
+			if (waiting) {
+				f.stringValue = [NSString stringWithFormat:@"⚠ 승인 대기 %ld", (long)waiting];
+				f.textColor = NSColor.systemRedColor;
+				f.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
+			} else if (a.stopped) {
 				f.stringValue = @"중단됨";
 				f.textColor = NSColor.systemRedColor;
 			} else if ([st isEqualToString:@"done"]) {

@@ -983,29 +983,25 @@ int cmd_perm(int argc, char **argv)
 }
 
 /*
- * PermissionRequest hook: Claude Code is about to ask the user to allow a tool call.
- * Put the question on the cait screen and wait for the answer; with no answer in
- * time, print nothing so the normal prompt appears.
+ * Put one question on the cait screen and wait for the user's answer.
+ * Returns 1 (allow), 0 (deny, reason in msg) or -1 (no answer in time).
  */
-static int perm_hook(const char *in)
+static int perm_ask(const char *in, const char *id, const char *tool, const char *detail, int wait_s,
+		    char *msg, size_t msize)
 {
-	char id[128] = "", name[256] = "", tool[64] = "", detail[1024] = "", root[4200], path[4600];
-	char rid[64], line[1500], ans[1200];
-	const char *w = getenv("CAIT_PERM_WAIT");
-	int wait_ms = (w && atoi(w) > 0 ? atoi(w) : 40) * 1000;
+	char name[256] = "", root[4200], path[4600], rid[64], t[64], d[1024], ans[1200];
 	FILE *f;
 
-	json_value(in, "agent_id", id, sizeof(id));
-	json_value(in, "tool_name", tool, sizeof(tool));
-	if (!json_text(in, "command", detail, sizeof(detail)))
-		json_value(in, "file_path", detail, sizeof(detail));
+	msg[0] = '\0';
+	snprintf(t, sizeof(t), "%s", tool);
+	snprintf(d, sizeof(d), "%s", detail);
+	flatten(t);
+	flatten(d);
 	if (*id && !agent_name_of(id, name, sizeof(name)))
 		snprintf(name, sizeof(name), "%.8s", id);
-	flatten(tool);
-	flatten(detail);
 	flatten(name);
 	if (ensure_dir() < 0)
-		return 0;
+		return -1;
 	perm_dir(root, sizeof(root));
 	mkdir(root, 0755);
 	/* keep the last request as the hook got it: handy to see which fields Claude Code sends */
@@ -1019,37 +1015,32 @@ static int perm_hook(const char *in)
 	snprintf(path, sizeof(path), "%s/%s.req", root, rid);
 	f = fopen(path, "w");
 	if (!f)
-		return 0;
-	fprintf(f, "%ld\t%s\t%s\t%s\t%s\n", (long)time(NULL), id, name, tool, detail);
+		return -1;
+	fprintf(f, "%ld\t%s\t%s\t%s\t%s\n", (long)time(NULL), id, name, t, d);
 	fclose(f);
 
-	for (int waited = 0; waited < wait_ms; waited += 200) {
+	for (int waited = 0; waited < wait_s * 1000; waited += 200) {
 		struct timespec ts = { 0, 200 * 1000 * 1000 };
-		char *msg;
+		char *why;
 
 		snprintf(path, sizeof(path), "%s/%s.ans", root, rid);
 		f = fopen(path, "r");
 		if (f) {
 			ans[0] = '\0';
 			if (fgets(ans, sizeof(ans), f)) {
+				int ok;
+
 				ans[strcspn(ans, "\n")] = '\0';
-				msg = strchr(ans, '\t');
-				if (msg)
-					*msg++ = '\0';
+				why = strchr(ans, '\t');
+				if (why)
+					*why++ = '\0';
+				ok = strcmp(ans, "allow") == 0;
+				snprintf(msg, msize, "%s", why ? why : "");
 				fclose(f);
 				unlink(path);
 				snprintf(path, sizeof(path), "%s/%s.req", root, rid);
 				unlink(path);
-				if (strcmp(ans, "allow") == 0) {
-					printf("{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}\n");
-				} else {
-					snprintf(line, sizeof(line), "The user denied this on the cait screen%s%s.",
-						 msg && *msg ? ": " : "", msg ? msg : "");
-					printf("{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\",\"message\":");
-					put_json_string(stdout, line, strlen(line));
-					printf("}}}\n");
-				}
-				return 0;
+				return ok;
 			}
 			fclose(f);
 		}
@@ -1057,7 +1048,107 @@ static int perm_hook(const char *in)
 	}
 	snprintf(path, sizeof(path), "%s/%s.req", root, rid);
 	unlink(path);
-	return 0;	/* no answer: the normal prompt follows */
+	return -1;
+}
+
+/*
+ * PermissionRequest hook: Claude Code is about to ask the user to allow a tool call.
+ * Put the question on the cait screen; with no answer in time, print nothing so
+ * the normal prompt appears.
+ */
+static int perm_hook(const char *in)
+{
+	char id[128] = "", tool[64] = "", detail[1024] = "", msg[1200], line[1500];
+	const char *w = getenv("CAIT_PERM_WAIT");
+	int r;
+
+	json_value(in, "agent_id", id, sizeof(id));
+	json_value(in, "tool_name", tool, sizeof(tool));
+	if (!json_text(in, "command", detail, sizeof(detail)))
+		json_value(in, "file_path", detail, sizeof(detail));
+	r = perm_ask(in, id, tool, detail, w && atoi(w) > 0 ? atoi(w) : 40, msg, sizeof(msg));
+	if (r == 1) {
+		printf("{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}\n");
+	} else if (r == 0) {
+		snprintf(line, sizeof(line), "The user denied this on the cait screen%s%s.", *msg ? ": " : "", msg);
+		printf("{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\",\"message\":");
+		put_json_string(stdout, line, strlen(line));
+		printf("}}}\n");
+	}
+	return 0;
+}
+
+/* ---- guard: calls from subagents that must be approved on the cait screen first ---- */
+
+static const char *guard_default[] = {
+	"rm -rf", "rm -r ", "sudo ", "git push", "git reset --hard", "curl ", "wget ", "npm publish",
+	"chmod ", "mkfs", "dd if=", "DROP TABLE", ".env", ".ssh/", NULL
+};
+
+/* <dir>/guard: one substring per line. Absent: the defaults. */
+static int guard_match(const char *detail, char *hit, size_t size)
+{
+	char path[4200], line[512];
+	FILE *f;
+
+	path_in_dir(path, sizeof(path), "guard");
+	f = fopen(path, "r");
+	if (!f) {
+		for (int i = 0; guard_default[i]; i++)
+			if (strstr(detail, guard_default[i])) {
+				snprintf(hit, size, "%s", guard_default[i]);
+				return 1;
+			}
+		return 0;
+	}
+	while (fgets(line, sizeof(line), f)) {
+		line[strcspn(line, "\n")] = '\0';
+		if (*line && line[0] != '#' && strstr(detail, line)) {
+			snprintf(hit, size, "%s", line);
+			fclose(f);
+			return 1;
+		}
+	}
+	fclose(f);
+	return 0;
+}
+
+int cmd_guard(int argc, char **argv)
+{
+	char path[4200], line[512];
+	FILE *f;
+
+	path_in_dir(path, sizeof(path), "guard");
+	if (argc >= 2 && strcmp(argv[0], "add") == 0) {
+		if (ensure_dir() < 0)
+			return 1;
+		if (access(path, F_OK) != 0) {	/* start from the defaults, then add */
+			f = fopen(path, "w");
+			for (int i = 0; f && guard_default[i]; i++)
+				fprintf(f, "%s\n", guard_default[i]);
+			if (f)
+				fclose(f);
+		}
+		f = fopen(path, "a");
+		if (!f)
+			return 1;
+		fprintf(f, "%s\n", argv[1]);
+		fclose(f);
+		printf("added: %s\n", argv[1]);
+		return 0;
+	}
+	printf("Subagent calls containing one of these need your OK on the cait screen (edit %s):\n", path);
+	f = fopen(path, "r");
+	if (!f) {
+		for (int i = 0; guard_default[i]; i++)
+			printf("  %s\n", guard_default[i]);
+		return 0;
+	}
+	while (fgets(line, sizeof(line), f))
+		if (line[0] != '#' && line[0] != '\n')
+			printf("  %s", line);
+	fclose(f);
+	return 0;
 }
 
 int cmd_check(int argc, char **argv)
@@ -1123,8 +1214,22 @@ int cmd_check(int argc, char **argv)
 	if (!hit && agent_name_of(id, name, sizeof(name)))
 		hit = stop_requested(name, reason, sizeof(reason));
 	if (!hit) {
-		char fp[4096];
+		char fp[4096], what[1024] = "", pat[512], msg[1200];
+		const char *gw = getenv("CAIT_GUARD_WAIT");
+		int r;
 
+		if (!json_text(in, "command", what, sizeof(what)))
+			json_value(in, "file_path", what, sizeof(what));
+		if (*what && guard_match(what, pat, sizeof(pat))) {
+			/* ask the user on the cait screen; no answer counts as no */
+			r = perm_ask(in, id, tool, what, gw && atoi(gw) > 0 ? atoi(gw) : 120, msg, sizeof(msg));
+			if (r != 1) {
+				fprintf(stderr, r == 0 ? "cait: the user denied this on the cait screen%s%s. Do not retry it; tell the main agent what you could not do.\n"
+							: "cait: the user did not answer in time, so this was not allowed%s%s. Do not retry it; tell the main agent what you could not do.\n",
+					*msg ? ": " : "", msg);
+				return 2;
+			}
+		}
 		if ((strcmp(tool, "Edit") == 0 || strcmp(tool, "Write") == 0 ||
 		     strcmp(tool, "MultiEdit") == 0) && json_value(in, "file_path", fp, sizeof(fp)))
 			pre_save(id, fp);
