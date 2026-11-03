@@ -36,8 +36,17 @@ int cmd_panel(int argc, char **argv);
 typedef struct {
 	char name[128], id[128], tool[128], target[512], task[512], text[512], state[16];
 	long first, last, last_report, idle;
-	int calls, done, reports, seen_act;
+	int calls, done, reports, seen_act, unreported, final;
 } agent_info_t;
 int status_load(agent_info_t *out, int max);
+
+/* permission requests waiting for the user */
+typedef struct {
+	char id[64], agent[128], tool[64], detail[512];
+	long when;
+} perm_t;
+int perm_load(perm_t *out, int max);
+int perm_answer(const char *id, int allow, const char *msg);
+int cmd_perm(int argc, char **argv);
 
 #endif

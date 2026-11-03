@@ -600,7 +600,7 @@ int cmd_brief(int argc, char **argv)
 
 /* ---- activity: what each subagent is doing, seen by the hook on every tool call ---- */
 
-/* <dir>/act/<agent id>: first \t last \t calls \t done \t tool \t target */
+/* <dir>/act/<agent id>: first \t last \t calls \t done \t unreported edits \t final report \t tool \t target */
 static void act_file(char *out, size_t size, const char *id)
 {
 	char dir[4096], w[256];
@@ -611,11 +611,35 @@ static void act_file(char *out, size_t size, const char *id)
 	snprintf(out, size, "%s/act/%s", dir, w);
 }
 
-static void act_update(const char *id, const char *tool, const char *target, int done)
+#define ACT_FIELDS 8
+
+/* Split an act line in place into ACT_FIELDS tab fields. */
+static void act_split(char *line, char *p[ACT_FIELDS])
 {
-	char dir[4096], root[4200], path[4400], line[1024], t[128] = "", g[512] = "";
-	long first = 0, last = 0;
-	int calls = 0, was_done = 0;
+	char *c = line;
+
+	for (int i = 0; i < ACT_FIELDS; i++)
+		p[i] = NULL;
+	for (int i = 0; i < ACT_FIELDS && c; i++) {
+		p[i] = c;
+		c = strchr(c, '\t');
+		if (c)
+			*c++ = '\0';
+	}
+	if (p[ACT_FIELDS - 1])
+		p[ACT_FIELDS - 1][strcspn(p[ACT_FIELDS - 1], "\n")] = '\0';
+}
+
+/*
+ * tool set: one more tool call (an edit counts as unreported until the agent
+ * next reports). report: the agent just reported. final: it gave its final report.
+ */
+static void act_update(const char *id, const char *tool, const char *target, int done, int report,
+		       int final)
+{
+	char dir[4096], root[4200], path[4400], line[2048], t[128] = "", g[512] = "", *p[ACT_FIELDS];
+	long first = 0;
+	int calls = 0, was_done = 0, unrep = 0, fin = 0;
 	time_t now = time(NULL);
 	FILE *f;
 
@@ -628,42 +652,39 @@ static void act_update(const char *id, const char *tool, const char *target, int
 	f = fopen(path, "r");
 	if (f) {
 		if (fgets(line, sizeof(line), f)) {
-			char *p[6] = { 0 };
-			char *c = line;
-
-			for (int i = 0; i < 6 && c; i++) {
-				p[i] = c;
-				c = strchr(c, '\t');
-				if (c)
-					*c++ = '\0';
-			}
+			act_split(line, p);
 			first = p[0] ? atol(p[0]) : 0;
-			last = p[1] ? atol(p[1]) : 0;
 			calls = p[2] ? atoi(p[2]) : 0;
 			was_done = p[3] ? atoi(p[3]) : 0;
-			if (p[4])
-				snprintf(t, sizeof(t), "%s", p[4]);
-			if (p[5]) {
-				p[5][strcspn(p[5], "\n")] = '\0';
-				snprintf(g, sizeof(g), "%s", p[5]);
-			}
+			unrep = p[4] ? atoi(p[4]) : 0;
+			fin = p[5] ? atoi(p[5]) : 0;
+			if (p[6])
+				snprintf(t, sizeof(t), "%s", p[6]);
+			if (p[7])
+				snprintf(g, sizeof(g), "%s", p[7]);
 		}
 		fclose(f);
 	}
-	(void)last;
-	(void)was_done;
 	if (!first)
 		first = (long)now;
+	if (done)
+		was_done = 1;
 	if (tool) {
 		calls++;
+		if (strcmp(tool, "Edit") == 0 || strcmp(tool, "Write") == 0 || strcmp(tool, "MultiEdit") == 0)
+			unrep++;
 		snprintf(t, sizeof(t), "%s", tool);
 		snprintf(g, sizeof(g), "%s", target ? target : "");
 		flatten(t);
 		flatten(g);
 	}
+	if (report)
+		unrep = 0;
+	if (final)
+		fin = 1;
 	f = fopen(path, "w");
 	if (f) {
-		fprintf(f, "%ld\t%ld\t%d\t%d\t%s\t%s\n", first, (long)now, calls, done, t, g);
+		fprintf(f, "%ld\t%ld\t%d\t%d\t%d\t%d\t%s\t%s\n", first, (long)now, calls, was_done, unrep, fin, t, g);
 		fclose(f);
 	}
 }
@@ -693,7 +714,7 @@ int status_load(agent_info_t *st, int max)
 	d = opendir(path);
 	while (d && (e = readdir(d)) && ns < max) {
 		agent_info_t *a = &st[ns];
-		char *c, *p[6] = { 0 };
+		char *p[ACT_FIELDS];
 
 		if (e->d_name[0] == '.')
 			continue;
@@ -706,24 +727,18 @@ int status_load(agent_info_t *st, int max)
 			continue;
 		}
 		fclose(f);
-		c = line;
-		for (int i = 0; i < 6 && c; i++) {
-			p[i] = c;
-			c = strchr(c, '\t');
-			if (c)
-				*c++ = '\0';
-		}
+		act_split(line, p);
 		snprintf(a->id, sizeof(a->id), "%s", e->d_name);
 		a->first = p[0] ? atol(p[0]) : 0;
 		a->last = p[1] ? atol(p[1]) : 0;
 		a->calls = p[2] ? atoi(p[2]) : 0;
 		a->done = p[3] ? atoi(p[3]) : 0;
-		if (p[4])
-			snprintf(a->tool, sizeof(a->tool), "%s", p[4]);
-		if (p[5]) {
-			p[5][strcspn(p[5], "\n")] = '\0';
-			snprintf(a->target, sizeof(a->target), "%s", p[5]);
-		}
+		a->unreported = p[4] ? atoi(p[4]) : 0;
+		a->final = p[5] ? atoi(p[5]) : 0;
+		if (p[6])
+			snprintf(a->tool, sizeof(a->tool), "%s", p[6]);
+		if (p[7])
+			snprintf(a->target, sizeof(a->target), "%s", p[7]);
 		if (!agent_name_of(a->id, a->name, sizeof(a->name)))
 			snprintf(a->name, sizeof(a->name), "%.8s", a->id);
 		a->seen_act = 1;
@@ -751,6 +766,8 @@ int status_load(agent_info_t *st, int max)
 		if (!a)
 			continue;
 		a->reports++;
+		if (strcmp(r.status, "final") == 0)
+			a->final = 1;
 		a->last_report = (long)r.time;
 		snprintf(a->text, sizeof(a->text), "%s", r.text);
 	}
@@ -806,6 +823,7 @@ int cmd_status(int argc, char **argv)
 		if (json) {
 			printf("{\"agent\":");
 			json_str_out(stdout, a->name);
+			printf(",\"final_report\":%s,\"unreported_edits\":%d", a->final ? "true" : "false", a->unreported);
 			printf(",\"state\":\"%s\",\"reports\":%d,\"calls\":%d,\"idle_seconds\":%ld,\"elapsed_seconds\":%ld,\"last_tool\":",
 			       a->state, a->reports, a->calls, a->idle, a->first ? (long)now - a->first : 0L);
 			json_str_out(stdout, a->tool);
@@ -820,6 +838,10 @@ int cmd_status(int argc, char **argv)
 		}
 		printf("%s\t%s\treports %d\ttool calls %d\tidle %lds\n", a->name, a->state, a->reports, a->calls,
 		       a->idle);
+		if (a->seen_act && a->done)
+			printf("  final report: %s\n", a->final ? "delivered" : "NOT delivered");
+		if (a->unreported)
+			printf("  unreported edits: %d (edited after the last report)\n", a->unreported);
 		if (*a->task)
 			printf("  task: %s\n", a->task);
 		if (*a->tool)
@@ -833,6 +855,211 @@ int cmd_status(int argc, char **argv)
 	return 0;
 }
 
+/* ---- permission requests: the hook asks, the user answers on the cait screen ---- */
+
+/* <dir>/perm/<id>.req: epoch \t agent id \t agent name \t tool \t detail
+ * <dir>/perm/<id>.ans: allow|deny [\t message] */
+static void perm_dir(char *out, size_t size)
+{
+	char dir[4096];
+
+	cait_dir(dir, sizeof(dir));
+	snprintf(out, size, "%s/perm", dir);
+}
+
+int perm_load(perm_t *out, int max)
+{
+	char root[4200], path[4500], line[2048];
+	struct dirent *e;
+	DIR *d;
+	int n = 0;
+
+	memset(out, 0, sizeof(*out) * (size_t)max);
+	perm_dir(root, sizeof(root));
+	d = opendir(root);
+	while (d && (e = readdir(d)) && n < max) {
+		size_t l = strlen(e->d_name);
+		FILE *f;
+		char *p[5] = { 0 }, *c = line;
+
+		if (l < 5 || strcmp(e->d_name + l - 4, ".req") != 0)
+			continue;
+		snprintf(path, sizeof(path), "%s/%.*s.ans", root, (int)(l - 4), e->d_name);
+		if (access(path, F_OK) == 0)
+			continue;	/* already answered */
+		snprintf(path, sizeof(path), "%s/%s", root, e->d_name);
+		f = fopen(path, "r");
+		if (!f)
+			continue;
+		if (!fgets(line, sizeof(line), f)) {
+			fclose(f);
+			continue;
+		}
+		fclose(f);
+		for (int i = 0; i < 5 && c; i++) {
+			p[i] = c;
+			c = strchr(c, '\t');
+			if (c)
+				*c++ = '\0';
+		}
+		if (p[4])
+			p[4][strcspn(p[4], "\n")] = '\0';
+		snprintf(out[n].id, sizeof(out[n].id), "%.*s", (int)(l - 4), e->d_name);
+		out[n].when = p[0] ? atol(p[0]) : 0;
+		if (out[n].when < (long)time(NULL) - 120)
+			continue;	/* the hook gave up long ago */
+		snprintf(out[n].agent, sizeof(out[n].agent), "%s", p[2] && *p[2] ? p[2] : p[1] ? p[1] : "?");
+		snprintf(out[n].tool, sizeof(out[n].tool), "%s", p[3] ? p[3] : "");
+		snprintf(out[n].detail, sizeof(out[n].detail), "%s", p[4] ? p[4] : "");
+		n++;
+	}
+	if (d)
+		closedir(d);
+	return n;
+}
+
+int perm_answer(const char *id, int allow, const char *msg)
+{
+	char root[4200], path[4600], w[128];
+	FILE *f;
+
+	snprintf(w, sizeof(w), "%s", id);
+	safe_name(w);
+	perm_dir(root, sizeof(root));
+	snprintf(path, sizeof(path), "%s/%s.req", root, w);
+	if (access(path, F_OK) != 0)
+		return -1;
+	snprintf(path, sizeof(path), "%s/%s.ans", root, w);
+	f = fopen(path, "w");
+	if (!f)
+		return -1;
+	fprintf(f, "%s\t%s\n", allow ? "allow" : "deny", msg ? msg : "");
+	fclose(f);
+	return 0;
+}
+
+int cmd_perm(int argc, char **argv)
+{
+	perm_t *q = calloc(32, sizeof(*q));
+	int n;
+
+	if (!q)
+		return 1;
+	n = perm_load(q, 32);
+	if (argc >= 2 && (strcmp(argv[0], "allow") == 0 || strcmp(argv[0], "deny") == 0)) {
+		int rc = perm_answer(argv[1], argv[0][0] == 'a', argc > 2 ? argv[2] : "");
+
+		if (rc < 0)
+			fprintf(stderr, "cait: no such pending request: %s\n", argv[1]);
+		else
+			printf("%s: %s\n", argv[0], argv[1]);
+		free(q);
+		return rc < 0 ? 1 : 0;
+	}
+	if (argc > 0 && strcmp(argv[0], "--json") != 0) {
+		fprintf(stderr, "usage: cait perm [--json] | allow ID | deny ID [reason]\n");
+		free(q);
+		return 1;
+	}
+	for (int i = 0; i < n; i++) {
+		if (argc > 0) {
+			printf("{\"id\":");
+			put_json_string(stdout, q[i].id, strlen(q[i].id));
+			printf(",\"agent\":");
+			put_json_string(stdout, q[i].agent, strlen(q[i].agent));
+			printf(",\"tool\":");
+			put_json_string(stdout, q[i].tool, strlen(q[i].tool));
+			printf(",\"detail\":");
+			put_json_string(stdout, q[i].detail, strlen(q[i].detail));
+			printf("}\n");
+		} else {
+			printf("%s\t%s\t%s %s\n", q[i].id, q[i].agent, q[i].tool, q[i].detail);
+		}
+	}
+	if (n == 0 && argc == 0)
+		printf("no pending requests\n");
+	free(q);
+	return 0;
+}
+
+/*
+ * PermissionRequest hook: Claude Code is about to ask the user to allow a tool call.
+ * Put the question on the cait screen and wait for the answer; with no answer in
+ * time, print nothing so the normal prompt appears.
+ */
+static int perm_hook(const char *in)
+{
+	char id[128] = "", name[256] = "", tool[64] = "", detail[1024] = "", root[4200], path[4600];
+	char rid[64], line[1500], ans[1200];
+	const char *w = getenv("CAIT_PERM_WAIT");
+	int wait_ms = (w && atoi(w) > 0 ? atoi(w) : 40) * 1000;
+	FILE *f;
+
+	json_value(in, "agent_id", id, sizeof(id));
+	json_value(in, "tool_name", tool, sizeof(tool));
+	if (!json_text(in, "command", detail, sizeof(detail)))
+		json_value(in, "file_path", detail, sizeof(detail));
+	if (*id && !agent_name_of(id, name, sizeof(name)))
+		snprintf(name, sizeof(name), "%.8s", id);
+	flatten(tool);
+	flatten(detail);
+	flatten(name);
+	if (ensure_dir() < 0)
+		return 0;
+	perm_dir(root, sizeof(root));
+	mkdir(root, 0755);
+	/* keep the last request as the hook got it: handy to see which fields Claude Code sends */
+	snprintf(path, sizeof(path), "%s/last-request.json", root);
+	f = fopen(path, "w");
+	if (f) {
+		fputs(in, f);
+		fclose(f);
+	}
+	snprintf(rid, sizeof(rid), "%ld-%ld", (long)time(NULL), (long)getpid());
+	snprintf(path, sizeof(path), "%s/%s.req", root, rid);
+	f = fopen(path, "w");
+	if (!f)
+		return 0;
+	fprintf(f, "%ld\t%s\t%s\t%s\t%s\n", (long)time(NULL), id, name, tool, detail);
+	fclose(f);
+
+	for (int waited = 0; waited < wait_ms; waited += 200) {
+		struct timespec ts = { 0, 200 * 1000 * 1000 };
+		char *msg;
+
+		snprintf(path, sizeof(path), "%s/%s.ans", root, rid);
+		f = fopen(path, "r");
+		if (f) {
+			ans[0] = '\0';
+			if (fgets(ans, sizeof(ans), f)) {
+				ans[strcspn(ans, "\n")] = '\0';
+				msg = strchr(ans, '\t');
+				if (msg)
+					*msg++ = '\0';
+				fclose(f);
+				unlink(path);
+				snprintf(path, sizeof(path), "%s/%s.req", root, rid);
+				unlink(path);
+				if (strcmp(ans, "allow") == 0) {
+					printf("{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}\n");
+				} else {
+					snprintf(line, sizeof(line), "The user denied this on the cait screen%s%s.",
+						 msg && *msg ? ": " : "", msg ? msg : "");
+					printf("{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"deny\",\"message\":");
+					put_json_string(stdout, line, strlen(line));
+					printf("}}}\n");
+				}
+				return 0;
+			}
+			fclose(f);
+		}
+		nanosleep(&ts, NULL);
+	}
+	snprintf(path, sizeof(path), "%s/%s.req", root, rid);
+	unlink(path);
+	return 0;	/* no answer: the normal prompt follows */
+}
+
 int cmd_check(int argc, char **argv)
 {
 	char in[65536], id[128], name[256], reason[1024], tool[64];
@@ -843,10 +1070,12 @@ int cmd_check(int argc, char **argv)
 	in[n] = '\0';
 	tool[0] = '\0';
 	json_value(in, "tool_name", tool, sizeof(tool));
+	if (argc >= 1 && strcmp(argv[0], "--permission") == 0)
+		return perm_hook(in);
 	if (argc >= 1 && strcmp(argv[0], "--done") == 0) {
 		/* SubagentStop: this agent has finished */
 		if (json_value(in, "agent_id", id, sizeof(id)))
-			act_update(id, NULL, NULL, 1);
+			act_update(id, NULL, NULL, 1, 0, 0);
 		return 0;
 	}
 	if (!json_value(in, "agent_id", id, sizeof(id))) {
@@ -871,7 +1100,8 @@ int cmd_check(int argc, char **argv)
 
 		if (!json_value(in, "file_path", target, sizeof(target)))
 			json_text(in, "command", target, sizeof(target));
-		act_update(id, *tool ? tool : "?", target, 0);
+		act_update(id, *tool ? tool : "?", target, 0, strstr(in, "cait report") != NULL,
+			   strstr(in, "cait report") != NULL && strstr(in, "--final") != NULL);
 	}
 	if (report_agent(in, name, sizeof(name))) {
 		agent_remember(id, name);
@@ -881,7 +1111,8 @@ int cmd_check(int argc, char **argv)
 	 * Requests to the main agent come from the user's screen. A subagent must
 	 * not be able to pose as the user, so it may not queue one.
 	 */
-	if (strstr(in, "cait tell") || strstr(in, "inbox.tsv") || strstr(in, "inbox.pos")) {
+	if (strstr(in, "cait tell") || strstr(in, "inbox.tsv") || strstr(in, "inbox.pos") ||
+	    strstr(in, "cait perm") || strstr(in, "/perm/")) {
 		fprintf(stderr, "cait: subagents cannot send requests to the main agent. Tell the user in your final answer instead.\n");
 		return 2;
 	}
@@ -1131,6 +1362,10 @@ int cmd_revert(int argc, char **argv)
 		fprintf(stderr, "cait: no report with that id\n");
 		return 1;
 	}
+	if (strcmp(recs[target].r.status, "final") == 0) {
+		fprintf(stderr, "cait: a final report has no file changes to undo\n");
+		return 1;
+	}
 	if (strcmp(recs[target].r.status, "reverted") == 0) {
 		fprintf(stderr, "cait: that entry is already an undo\n");
 		return 1;
@@ -1358,7 +1593,7 @@ int cmd_report(int argc, char **argv)
 {
 	const char *agent = getenv("CAIT_AGENT");
 	const char *files[MAX_FILES];
-	int nfiles = 0, level;
+	int nfiles = 0, level, final = 0;
 	char text[4096] = "", line[16384], who[256], joined[8192] = "";
 	char added[24] = "", removed[24] = "", status[16] = "", why[1024] = "";
 	long sum_a = -1, sum_r = -1;
@@ -1372,6 +1607,8 @@ int cmd_report(int argc, char **argv)
 	for (int i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--agent") == 0 && i + 1 < argc) {
 			agent = argv[++i];
+		} else if (strcmp(argv[i], "--final") == 0) {
+			final = 1;
 		} else if (strcmp(argv[i], "--file") == 0 && i + 1 < argc) {
 			if (nfiles < MAX_FILES)
 				files[nfiles++] = argv[i + 1];
@@ -1384,9 +1621,12 @@ int cmd_report(int argc, char **argv)
 				tlen = sizeof(text) - 1;
 		}
 	}
-	if (!*text || nfiles == 0) {
+	if (final)
+		nfiles = 0;
+	if (!*text || (nfiles == 0 && !final)) {
 		fprintf(stderr,
 			"usage: cait report [--agent NAME] --file PATH [--file PATH ...] \"summary\"\n"
+			"       cait report [--agent NAME] --final \"what you did, as your last report\"\n"
 			"  One report per changed file, or one report for a group of related files.\n");
 		return 1;
 	}
@@ -1394,6 +1634,27 @@ int cmd_report(int argc, char **argv)
 	if (ensure_dir() < 0) {
 		perror("cait: cannot create feed directory");
 		return 1;
+	}
+
+	if (final) {
+		int fn;
+
+		snprintf(who, sizeof(who), "%s", agent);
+		flatten(who);
+		flatten(text);
+		fn = snprintf(line, sizeof(line), "%ld\t%s\t\tfinal\t\t\t%s\n", (long)time(NULL), who, text);
+		if (fn < 0 || (size_t)fn >= sizeof(line)) {
+			fn = (int)sizeof(line) - 1;
+			line[fn - 1] = '\n';
+		}
+		if (feed_append(line, (size_t)fn) < 0) {
+			perror("cait: cannot write feed");
+			return 1;
+		}
+		printf("shown to the user (final report)\n");
+		if (stop_requested(agent, why, sizeof(why)))
+			return 3;
+		return 0;
 	}
 
 	/* Measure every file; sum the counts, keep one status if they agree. */

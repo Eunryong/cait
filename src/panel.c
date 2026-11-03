@@ -247,6 +247,8 @@ static const char *status_label(const char *status)
 		return "삭제됨";
 	if (strcmp(status, "mixed") == 0)
 		return "변경됨";
+	if (strcmp(status, "final") == 0)
+		return "완료 보고";
 	return "변경됨";
 }
 
@@ -258,7 +260,7 @@ static void line_clipped(out_t *o, const char *s, int cols)
 	put(o, "%.*s\033[0m\033[K\r\n", (int)n, s);
 }
 
-static void draw(const view_t *v, int sel, const char *msg)
+static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 {
 	struct winsize ws = { 24, 80, 0, 0 };
 	out_t o = { 0 };
@@ -276,6 +278,12 @@ static void draw(const view_t *v, int sel, const char *msg)
 	line_clipped(&o, buf, cols);
 	used++;
 
+	if (ask) {
+		snprintf(buf, sizeof(buf), "\033[43;30;1m 승인 요청 \033[0m \033[1m%s\033[0m  %s %s    \033[1my\033[0m 허용  \033[1mn\033[0m 거부",
+			 ask->agent, ask->tool, ask->detail);
+		line_clipped(&o, buf, cols);
+		used++;
+	}
 	if (v->nagents == 0) {
 		line_clipped(&o, "\033[2m아직 보고가 없습니다.\033[0m", cols);
 		used++;
@@ -291,8 +299,8 @@ static void draw(const view_t *v, int sel, const char *msg)
 			col = "33";
 			label = "조용함";
 		} else if (strcmp(a->state, "done") == 0) {
-			col = "2";
-			label = "끝남";
+			col = a->final && !a->unreported ? "2" : "33";
+			label = a->unreported ? "끝남·미보고 수정" : a->final ? "완료 보고됨" : "끝남·완료 보고 없음";
 		} else if (strcmp(a->state, "stopped") == 0 || is_stopped(v, a->name)) {
 			col = "31";
 			label = "중단됨";
@@ -300,7 +308,9 @@ static void draw(const view_t *v, int sel, const char *msg)
 			col = "2";
 			label = "보고만";
 		}
-		if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
+		if (a->unreported)
+			snprintf(when, sizeof(when), "  미보고 수정 %d", a->unreported);
+		else if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
 			snprintf(when, sizeof(when), "  %lds 전", a->idle);
 		if (*a->tool && strcmp(a->state, "done") != 0)
 			snprintf(what, sizeof(what), "%s %s", a->tool, a->target);
@@ -403,6 +413,8 @@ int cmd_panel(int argc, char **argv)
 	time_t msg_at = 0;
 	struct stat prev_feed = { 0 }, prev_stop = { 0 };
 	time_t agents_at = 0;
+	perm_t pending[4];
+	int npending = 0;
 
 	(void)argv;
 	if (argc > 0) {
@@ -450,9 +462,10 @@ int cmd_panel(int argc, char **argv)
 		if (time(NULL) != agents_at) {
 			agents_at = time(NULL);
 			v.nagents = status_load(v.agents, MAX_AGENTS);
+			npending = perm_load(pending, 4);
 		}
 		/* redraw each tick: cheap, and it follows a resized window */
-		draw(&v, sel, msg);
+		draw(&v, sel, msg, npending ? &pending[0] : NULL);
 		dirty = 0;
 
 		if (poll(&p, 1, 200) > 0 && read(STDIN_FILENO, &c, 1) == 1) {
@@ -472,6 +485,11 @@ int cmd_panel(int argc, char **argv)
 					else if (seq[1] == 'A' && sel > 0)
 						sel--;
 				}
+			} else if ((c == 'y' || c == 'n') && npending) {
+				perm_answer(pending[0].id, c == 'y', "");
+				snprintf(msg, sizeof(msg), "%s: %s", pending[0].agent, c == 'y' ? "허용함" : "거부함");
+				msg_at = time(NULL);
+				npending = perm_load(pending, 4);
 			} else if (c == 's') {
 				if (v.nagents && v.agents[sel].reports == 0) {
 					snprintf(msg, sizeof(msg), "첫 보고 전이라 이름으로 중단할 수 없습니다");

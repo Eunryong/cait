@@ -35,3 +35,5 @@ Rules:
 - `--agent` is a short name for your task; use the same one every time.
 - Put the text in ONE quoted argument, in the user's language.
 - One report per file (or per group), after you are done with it, not once per edit. The report needs at least one `--file`.
+- Report every file you edited before you finish. Edits made after your last report are shown to the user as "unreported edits".
+- When all your work is done, send one last report, then end: `cait report --agent NAME --final "what you did overall, in plain words"`. It takes no `--file`. The user sees whether your final report arrived.

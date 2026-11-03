@@ -8,6 +8,13 @@
         ]
       }
     ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          { "type": "command", "command": "/Users/eunryong/develop/c_tools/cait check --permission", "timeout": 60 }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [

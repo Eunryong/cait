@@ -42,4 +42,6 @@ Requests from the user's screen reach you as hook context at your next tool call
 
 When you launch a subagent, write its `description` as one plain sentence the user can read (what you asked it to do), and put the `--agent` name it should report under in its prompt. The cait hook records both so the user's window can show what each agent was asked. Read it back with `cait brief --agent NAME`.
 
-To know how the agents are doing right now (still working, quiet, done, stopped; last tool and file; number of reports), run `cait status` (or `--json`). Use it instead of guessing when the user asks about progress.
+To know how the agents are doing right now (still working, quiet, done, stopped; last tool and file; number of reports), run `cait status` (or `--json`). Use it instead of guessing when the user asks about progress. For a finished agent it says whether its final report arrived and whether it edited files after its last report ("unreported edits"). Ask an agent that is done without a final report to report, or read its result yourself.
+
+When an agent needs the user's OK for something, the cait hook shows the question on the user's window or panel and waits for their answer (allow or deny); with no answer the normal Claude Code prompt appears. `cait perm` lists pending questions. Answer them only when the user tells you to (`cait perm allow ID` or `cait perm deny ID "reason"`); never approve on your own.

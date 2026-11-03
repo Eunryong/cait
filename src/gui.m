@@ -16,7 +16,8 @@
 
 @interface Agent : NSObject
 @property NSString *name, *text, *state, *doing;	/* state/doing: from cait status */
-@property NSInteger count, idle;
+@property NSInteger count, idle, unreported;
+@property BOOL final;
 @property BOOL stopped;
 @end
 @implementation Agent
@@ -32,6 +33,7 @@
 @property NSMutableArray<Report *> *all;
 @property NSData *lastFeed, *lastStop;
 @property BOOL busy;
+@property NSMutableSet<NSString *> *asked;	/* permission requests already put on screen */
 @end
 
 static NSData *read_dir_file(const char *name)
@@ -75,7 +77,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 
 		if (st[i].tool[0] && ![state isEqualToString:@"done"])
 			doing = [NSString stringWithFormat:@"%s %s", st[i].tool, st[i].target];
-		by[name] = @{ @"state" : state, @"doing" : doing, @"idle" : @(st[i].idle) };
+		by[name] = @{ @"state" : state, @"doing" : doing, @"idle" : @(st[i].idle),
+			@"unrep" : @(st[i].unreported), @"final" : @(st[i].final) };
 		[order addObject:name];
 	}
 	free(st);
@@ -131,9 +134,9 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_header.font = [NSFont boldSystemFontOfSize:13];
 	[root addSubview:_header];
 
-	_agentTable = [self tableWithColumns:@[ @[ @"name", @"에이전트", @120 ], @[ @"count", @"건수", @40 ],
-						@[ @"state", @"상태", @60 ] ]];
-	as = [[NSScrollView alloc] initWithFrame:NSMakeRect(12, 44, 250, 476)];
+	_agentTable = [self tableWithColumns:@[ @[ @"name", @"에이전트", @90 ], @[ @"count", @"건수", @34 ],
+						@[ @"state", @"상태", @130 ] ]];
+	as = [[NSScrollView alloc] initWithFrame:NSMakeRect(12, 44, 300, 476)];
 	as.documentView = _agentTable;
 	as.hasVerticalScroller = YES;
 	as.borderType = NSBezelBorder;
@@ -143,7 +146,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_reportTable = [self tableWithColumns:@[ @[ @"when", @"시간", @70 ], @[ @"status", @"상태", @80 ],
 						 @[ @"file", @"파일", @140 ], @[ @"counts", @"변경", @70 ],
 						 @[ @"text", @"요약", @400 ] ]];
-	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(270, 44, 578, 476)];
+	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(320, 44, 528, 476)];
 	rs.documentView = _reportTable;
 	rs.hasVerticalScroller = YES;
 	rs.borderType = NSBezelBorder;
@@ -152,8 +155,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 
 	[root addSubview:[self button:@"에이전트 중지" x:12 w:110 action:@selector(stopAgent:)]];
 	[root addSubview:[self button:@"중지 해제" x:128 w:80 action:@selector(clearStops:)]];
-	[root addSubview:[self button:@"이 보고 되돌리기" x:270 w:130 action:@selector(undoReport:)]];
-	[root addSubview:[self button:@"수정 요청…" x:406 w:100 action:@selector(askFix:)]];
+	[root addSubview:[self button:@"이 보고 되돌리기" x:320 w:130 action:@selector(undoReport:)]];
+	[root addSubview:[self button:@"수정 요청…" x:456 w:100 action:@selector(askFix:)]];
 
 	[_win makeKeyAndOrderFront:nil];
 	[NSTimer scheduledTimerWithTimeInterval:0.3
@@ -169,6 +172,37 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	[self refresh];
 }
 
+/* An agent wants to run something that needs the user's OK: ask, and hand the answer to its hook. */
+- (void)askPermissions
+{
+	perm_t *q = calloc(8, sizeof(*q));
+	int n = q ? perm_load(q, 8) : 0;
+
+	if (!_asked)
+		_asked = [NSMutableSet set];
+	for (int i = 0; i < n; i++) {
+		NSString *rid = [NSString stringWithUTF8String:q[i].id];
+		NSAlert *al;
+		NSModalResponse r;
+
+		if ([_asked containsObject:rid])
+			continue;
+		[_asked addObject:rid];
+		al = [NSAlert new];
+		al.messageText = [NSString stringWithFormat:@"%s 에이전트가 승인을 요청합니다", q[i].agent];
+		al.informativeText = [NSString stringWithFormat:@"%s\n%s\n\n허용하면 바로 실행됩니다. 답하지 않으면 Claude Code의 확인창이 대신 뜹니다.",
+							       q[i].tool, q[i].detail];
+		al.alertStyle = NSAlertStyleWarning;
+		[al addButtonWithTitle:@"허용"];
+		[al addButtonWithTitle:@"거부"];
+		[NSApp activateIgnoringOtherApps:YES];
+		r = [al runModal];
+		perm_answer(q[i].id, r == NSAlertFirstButtonReturn, r == NSAlertFirstButtonReturn ? "" : "");
+		break;	/* one at a time; the next shows on the next tick */
+	}
+	free(q);
+}
+
 /* What agents are doing changes without touching the feed: re-read it every second. */
 - (void)tick
 {
@@ -179,6 +213,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 
 	if (_busy)
 		return;
+	[self askPermissions];
 	for (NSString *n in order) {
 		BOOL known = NO;
 
@@ -195,6 +230,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		a.state = by[a.name][@"state"];
 		a.doing = by[a.name][@"doing"];
 		a.idle = [by[a.name][@"idle"] longValue];
+		a.unreported = [by[a.name][@"unrep"] integerValue];
+		a.final = [by[a.name][@"final"] boolValue];
 	}
 	_busy = YES;
 	[_agentTable reloadData];
@@ -232,7 +269,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	NSMutableArray<Report *> *all = [NSMutableArray array];
 	NSDateFormatter *df = [[NSDateFormatter alloc] init];
 	NSDictionary *labels = @{
-		@"created" : @"생성됨", @"updated" : @"업데이트됨", @"deleted" : @"삭제됨", @"reverted" : @"되돌림"
+		@"created" : @"생성됨", @"updated" : @"업데이트됨", @"deleted" : @"삭제됨", @"reverted" : @"되돌림", @"final" : @"완료 보고"
 	};
 	NSString *selName = [self selectedAgent].name;
 	NSString *selRid = [self selectedReport].rid;
@@ -317,6 +354,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 			a.state = by[a.name][@"state"];
 			a.doing = by[a.name][@"doing"];
 			a.idle = [by[a.name][@"idle"] longValue];
+			a.unreported = [by[a.name][@"unrep"] integerValue];
+			a.final = [by[a.name][@"final"] boolValue];
 		}
 	}
 	for (Agent *a in agents)
@@ -510,8 +549,9 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 				f.stringValue = @"중단됨";
 				f.textColor = NSColor.systemRedColor;
 			} else if ([st isEqualToString:@"done"]) {
-				f.stringValue = @"끝남";
-				f.textColor = NSColor.secondaryLabelColor;
+				f.stringValue = a.unreported ? [NSString stringWithFormat:@"끝남·미보고 수정 %ld", (long)a.unreported]
+							     : a.final ? @"완료 보고됨" : @"끝남·완료 보고 없음";
+				f.textColor = a.final && !a.unreported ? NSColor.secondaryLabelColor : NSColor.systemOrangeColor;
 			} else if ([st isEqualToString:@"quiet"]) {
 				f.stringValue = @"조용함";
 				f.textColor = NSColor.systemOrangeColor;
