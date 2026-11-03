@@ -177,9 +177,9 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	[root addSubview:as];
 	_agentScroll = as;
 
-	_reportTable = [self tableWithColumns:@[ @[ @"when", @"시간", @70 ], @[ @"status", @"상태", @80 ],
-						 @[ @"file", @"파일", @140 ], @[ @"counts", @"변경", @70 ],
-						 @[ @"text", @"요약", @400 ] ]];
+	_reportTable = [self tableWithColumns:@[ @[ @"when", @"시간", @62 ], @[ @"status", @"상태", @72 ],
+						 @[ @"file", @"파일", @120 ], @[ @"text", @"요약", @500 ] ]];
+	_reportTable.rowHeight = 40;
 	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(320, 44, 802, 460)];
 	rs.documentView = _reportTable;
 	rs.hasVerticalScroller = YES;
@@ -1011,10 +1011,17 @@ static NSString *seen_key(Agent *a)
 			f.stringValue = p.status;
 		else if ([id isEqualToString:@"file"])
 			f.stringValue = p.file;
-		else if ([id isEqualToString:@"counts"])
-			f.stringValue = p.counts;
 		else
 			f.stringValue = p.text;
+		if ([id isEqualToString:@"file"]) {
+			f.toolTip = p.counts.length ? [NSString stringWithFormat:@"%@  (%@)", p.file, p.counts] : p.file;
+		} else if ([id isEqualToString:@"text"]) {
+			f.lineBreakMode = NSLineBreakByWordWrapping;
+			f.maximumNumberOfLines = 2;
+			f.usesSingleLineMode = NO;
+			f.cell.wraps = YES;
+			f.toolTip = p.text;
+		}
 		if ([p.status isEqualToString:@"되돌림"])
 			f.textColor = NSColor.secondaryLabelColor;
 	}
