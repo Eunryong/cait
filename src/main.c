@@ -34,6 +34,8 @@ int main(int argc, char **argv)
 		return cmd_brief(argc - 2, argv + 2);
 	if (argc >= 2 && strcmp(argv[1], "perm") == 0)
 		return cmd_perm(argc - 2, argv + 2);
+	if (argc >= 2 && strcmp(argv[1], "forget") == 0)
+		return cmd_forget(argc - 2, argv + 2);
 	if (argc >= 2 && strcmp(argv[1], "guard") == 0)
 		return cmd_guard(argc - 2, argv + 2);
 	if (argc >= 2 && strcmp(argv[1], "check") == 0)
@@ -55,7 +57,8 @@ int main(int argc, char **argv)
 		"       cait tell [--agent NAME] \"request\" | cait inbox                  (screens, main agent)\n"
 		"       cait status [--json]                                             (what every agent is doing now)\n"
 		"       cait brief [--agent NAME]                                        (what the main agent asked an agent)\n"
-		"       cait guard [add PATTERN]                                         (what subagents may not do without your OK)\n"
+		"       cait forget --agent NAME | --done | --undo                       (clear finished agents from the lists; the log stays)\n"
+		"       cait guard [add PATTERN | mode off|on|all]                                         (what subagents may not do without your OK)\n"
 		"       cait perm [--json] | allow ID | deny ID [reason]                 (permission requests from agents)\n");
 	return 1;
 }

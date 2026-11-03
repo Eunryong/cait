@@ -20,6 +20,20 @@
 #define FILE_SEP '\x1f'
 
 static volatile sig_atomic_t quit;
+static int show_hidden;	/* key h: also list agents the user cleared */
+
+/* status_load, minus the agents the user cleared from the list */
+static int load_agents(agent_info_t *out)
+{
+	agent_info_t *all = calloc(MAX_AGENTS, sizeof(*all));
+	int n = all ? status_load(all, MAX_AGENTS) : 0, k = 0;
+
+	for (int i = 0; i < n; i++)
+		if (show_hidden || !all[i].hidden)
+			out[k++] = all[i];
+	free(all);
+	return k;
+}
 
 static void on_sig(int sig)
 {
@@ -185,7 +199,7 @@ static void view_load(view_t *v)
 		p = nl + 1;
 	}
 	free(stops);
-	v->nagents = status_load(v->agents, MAX_AGENTS);
+	v->nagents = load_agents(v->agents);
 }
 
 static int is_stopped(const view_t *v, const char *name)
@@ -393,7 +407,7 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 	put(&o, "\033[J");
 
 	put(&o, "\033[%d;1H\033[7m", rows);
-	snprintf(buf, sizeof(buf), " ↑↓ 선택  s 선택한 에이전트 중단  c 해제  q 종료   %s", msg);
+	snprintf(buf, sizeof(buf), " ↑↓ 선택  s 중단  c 해제  x 치우기  X 끝난 것 모두  h 치운 것 보기  q 종료   %s", msg);
 	{
 		size_t n = fit(buf, cols, &used);
 
@@ -461,7 +475,7 @@ int cmd_panel(int argc, char **argv)
 		/* what agents are doing changes without touching the feed: re-read every second */
 		if (time(NULL) != agents_at) {
 			agents_at = time(NULL);
-			v.nagents = status_load(v.agents, MAX_AGENTS);
+			v.nagents = load_agents(v.agents);
 			npending = perm_load(pending, 4);
 		}
 		/* redraw each tick: cheap, and it follows a resized window */
@@ -490,6 +504,18 @@ int cmd_panel(int argc, char **argv)
 				snprintf(msg, sizeof(msg), "%s: %s", pending[0].agent, c == 'y' ? "허용함" : "거부함");
 				msg_at = time(NULL);
 				npending = perm_load(pending, 4);
+			} else if (c == 'x' || c == 'X') {
+				int running = 0, n = c == 'X' ? forget_agents(NULL, &running)
+							      : v.nagents ? forget_agents(v.agents[sel].name, &running) : 0;
+
+				snprintf(msg, sizeof(msg), running ? "아직 실행 중이라 치울 수 없습니다" : "%d개 치움 (기록은 남음)", n);
+				msg_at = time(NULL);
+				v.nagents = load_agents(v.agents);
+			} else if (c == 'h') {
+				show_hidden = !show_hidden;
+				snprintf(msg, sizeof(msg), show_hidden ? "치운 에이전트도 표시" : "치운 에이전트 숨김");
+				msg_at = time(NULL);
+				v.nagents = load_agents(v.agents);
 			} else if (c == 's') {
 				if (v.nagents && v.agents[sel].reports == 0) {
 					snprintf(msg, sizeof(msg), "첫 보고 전이라 이름으로 중단할 수 없습니다");

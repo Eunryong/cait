@@ -696,6 +696,70 @@ static void json_str_out(FILE *o, const char *s)
 	put_json_string(o, s, strlen(s));
 }
 
+/* <dir>/hidden: names of agents the user cleared from the lists. The feed itself is never touched. */
+static int hidden_has(const char *name)
+{
+	char path[4200], line[512];
+	FILE *f;
+	int hit = 0;
+
+	path_in_dir(path, sizeof(path), "hidden");
+	f = fopen(path, "r");
+	while (f && fgets(line, sizeof(line), f)) {
+		line[strcspn(line, "\n")] = '\0';
+		if (strcmp(line, name) == 0)
+			hit = 1;
+	}
+	if (f)
+		fclose(f);
+	return hit;
+}
+
+static void hidden_add(const char *name)
+{
+	char path[4200], w[300];
+	FILE *f;
+
+	if (hidden_has(name) || ensure_dir() < 0)
+		return;
+	snprintf(w, sizeof(w), "%s", name);
+	flatten(w);
+	path_in_dir(path, sizeof(path), "hidden");
+	f = fopen(path, "a");
+	if (f) {
+		fprintf(f, "%s\n", w);
+		fclose(f);
+	}
+}
+
+static void hidden_remove(const char *name)
+{
+	char path[4200], tmp[4300], line[512];
+	FILE *f, *o;
+
+	path_in_dir(path, sizeof(path), "hidden");
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	f = fopen(path, "r");
+	if (!f)
+		return;
+	o = fopen(tmp, "w");
+	if (!o) {
+		fclose(f);
+		return;
+	}
+	while (fgets(line, sizeof(line), f)) {
+		char w[512];
+
+		snprintf(w, sizeof(w), "%s", line);
+		w[strcspn(w, "\n")] = '\0';
+		if (strcmp(w, name) != 0)
+			fputs(line, o);
+	}
+	fclose(f);
+	fclose(o);
+	rename(tmp, path);
+}
+
 /* Every agent cait knows of, with its state worked out; returns how many. */
 int status_load(agent_info_t *st, int max)
 {
@@ -801,6 +865,13 @@ int status_load(agent_info_t *st, int max)
 			snprintf(a->state, sizeof(a->state), "working");
 		else
 			snprintf(a->state, sizeof(a->state), "quiet");
+		/* cleared from the list; an agent that is busy again comes back by itself */
+		if (hidden_has(a->name)) {
+			if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
+				hidden_remove(a->name);
+			else
+				a->hidden = 1;
+		}
 	}
 	return ns;
 }
@@ -808,18 +879,25 @@ int status_load(agent_info_t *st, int max)
 int cmd_status(int argc, char **argv)
 {
 	agent_info_t *st = calloc(MAX_STAT, sizeof(*st));
-	int ns, json = 0;
+	int ns, json = 0, all = 0, nh = 0;
 	time_t now = time(NULL);
 
-	for (int i = 0; i < argc; i++)
+	for (int i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--json") == 0)
 			json = 1;
+		else if (strcmp(argv[i], "--all") == 0)
+			all = 1;
+	}
 	if (!st)
 		return 1;
 	ns = status_load(st, MAX_STAT);
 	for (int i = 0; i < ns; i++) {
 		agent_info_t *a = &st[i];
 
+		if (a->hidden && !all) {
+			nh++;
+			continue;
+		}
 		if (json) {
 			printf("{\"agent\":");
 			json_str_out(stdout, a->name);
@@ -851,7 +929,70 @@ int cmd_status(int argc, char **argv)
 	}
 	if (ns == 0 && !json)
 		printf("no agents seen yet\n");
+	if (nh && !json)
+		printf("(%d cleared agent%s hidden; cait status --all shows them, cait log keeps every report)\n", nh,
+		       nh == 1 ? "" : "s");
 	free(st);
+	return 0;
+}
+
+/*
+ * Clear one finished agent (name) or every finished one (NULL) from the lists; the
+ * reports stay in the feed. Returns how many were cleared; *running is set when
+ * the named agent is still working.
+ */
+int forget_agents(const char *name, int *running)
+{
+	agent_info_t *st = calloc(MAX_STAT, sizeof(*st));
+	int ns, n = 0;
+
+	if (running)
+		*running = 0;
+	if (!st)
+		return 0;
+	ns = status_load(st, MAX_STAT);
+	for (int i = 0; i < ns; i++) {
+		agent_info_t *a = &st[i];
+		int busy = strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0;
+
+		if (name ? strcmp(name, a->name) != 0 : (strcmp(a->state, "done") != 0 && strcmp(a->state, "stopped") != 0))
+			continue;
+		if (busy) {
+			if (running)
+				*running = 1;
+			continue;
+		}
+		hidden_add(a->name);
+		n++;
+	}
+	free(st);
+	return n;
+}
+
+/* cait forget: clear finished agents from the lists. Their reports stay in the feed. */
+int cmd_forget(int argc, char **argv)
+{
+	int n, running;
+	char path[4200];
+
+	if (argc >= 1 && strcmp(argv[0], "--undo") == 0) {
+		path_in_dir(path, sizeof(path), "hidden");
+		unlink(path);
+		printf("all agents are listed again\n");
+		return 0;
+	}
+	if (argc >= 2 && strcmp(argv[0], "--agent") == 0) {
+		n = forget_agents(argv[1], &running);
+		if (running)
+			fprintf(stderr, "cait: %s is still running; stop it first\n", argv[1]);
+	} else if (argc >= 1 && strcmp(argv[0], "--done") == 0) {
+		n = forget_agents(NULL, &running);
+	} else {
+		fprintf(stderr, "usage: cait forget --agent NAME | --done | --undo\n"
+				"  Clears finished agents from the lists. Their reports stay in cait log.\n");
+		return 1;
+	}
+	printf("cleared %d agent%s from the lists (cait log still has every report)\n", n, n == 1 ? "" : "s");
 	return 0;
 }
 
@@ -1080,6 +1221,29 @@ static int perm_hook(const char *in)
 
 /* ---- guard: calls from subagents that must be approved on the cait screen first ---- */
 
+/* <dir>/guardmode: off (never ask), on (risky phrases, the default), all (every command and edit) */
+static const char *guard_mode(void)
+{
+	static char m[16];
+	char path[4200];
+	FILE *f;
+
+	snprintf(m, sizeof(m), "on");
+	path_in_dir(path, sizeof(path), "guardmode");
+	f = fopen(path, "r");
+	if (f) {
+		char l[16] = "";
+
+		if (fgets(l, sizeof(l), f)) {
+			l[strcspn(l, "\n")] = '\0';
+			if (strcmp(l, "off") == 0 || strcmp(l, "all") == 0)
+				snprintf(m, sizeof(m), "%s", l);
+		}
+		fclose(f);
+	}
+	return m;
+}
+
 static const char *guard_default[] = {
 	"rm -rf", "rm -r ", "sudo ", "git push", "git reset --hard", "curl ", "wget ", "npm publish",
 	"chmod ", "mkfs", "dd if=", "DROP TABLE", ".env", ".ssh/", NULL
@@ -1118,6 +1282,24 @@ int cmd_guard(int argc, char **argv)
 	char path[4200], line[512];
 	FILE *f;
 
+	if (argc >= 1 && strcmp(argv[0], "mode") == 0) {
+		if (argc >= 2) {
+			if (strcmp(argv[1], "off") != 0 && strcmp(argv[1], "on") != 0 && strcmp(argv[1], "all") != 0) {
+				fprintf(stderr, "usage: cait guard mode off|on|all\n");
+				return 1;
+			}
+			if (ensure_dir() < 0)
+				return 1;
+			path_in_dir(path, sizeof(path), "guardmode");
+			f = fopen(path, "w");
+			if (!f)
+				return 1;
+			fprintf(f, "%s\n", argv[1]);
+			fclose(f);
+		}
+		printf("guard mode: %s\n", guard_mode());
+		return 0;
+	}
 	path_in_dir(path, sizeof(path), "guard");
 	if (argc >= 2 && strcmp(argv[0], "add") == 0) {
 		if (ensure_dir() < 0)
@@ -1137,6 +1319,7 @@ int cmd_guard(int argc, char **argv)
 		printf("added: %s\n", argv[1]);
 		return 0;
 	}
+	printf("guard mode: %s (cait guard mode off|on|all)\n", guard_mode());
 	printf("Subagent calls containing one of these need your OK on the cait screen (edit %s):\n", path);
 	f = fopen(path, "r");
 	if (!f) {
@@ -1220,7 +1403,12 @@ int cmd_check(int argc, char **argv)
 
 		if (!json_text(in, "command", what, sizeof(what)))
 			json_value(in, "file_path", what, sizeof(what));
-		if (*what && guard_match(what, pat, sizeof(pat))) {
+		const char *gm = guard_mode();
+		int every = strcmp(gm, "all") == 0 &&
+			    (strcmp(tool, "Bash") == 0 || strcmp(tool, "Edit") == 0 || strcmp(tool, "Write") == 0 ||
+			     strcmp(tool, "MultiEdit") == 0 || strcmp(tool, "NotebookEdit") == 0);
+
+		if (*what && strcmp(gm, "off") != 0 && (every || guard_match(what, pat, sizeof(pat)))) {
 			/* ask the user on the cait screen; no answer counts as no */
 			r = perm_ask(in, id, tool, what, gw && atoi(gw) > 0 ? atoi(gw) : 120, msg, sizeof(msg));
 			if (r != 1) {

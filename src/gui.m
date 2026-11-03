@@ -39,6 +39,8 @@
 @property NSString *permId;
 @property NSMutableDictionary<NSString *, NSNumber *> *pendingBy;	/* agent name -> requests waiting */
 @property NSString *permShown;
+@property BOOL showHidden;
+@property NSPopUpButton *guardMenu;
 @property NSScrollView *agentScroll, *reportScroll;
 @end
 
@@ -84,7 +86,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		if (st[i].tool[0] && ![state isEqualToString:@"done"])
 			doing = [NSString stringWithFormat:@"%@ %@", [NSString stringWithUTF8String:st[i].tool],
 						       [NSString stringWithUTF8String:st[i].target]];
-		by[name] = @{ @"state" : state, @"doing" : doing, @"idle" : @(st[i].idle),
+		by[name] = @{ @"state" : state, @"doing" : doing, @"idle" : @(st[i].idle), @"hidden" : @(st[i].hidden),
 			@"unrep" : @(st[i].unreported), @"final" : @(st[i].final) };
 		[order addObject:name];
 	}
@@ -126,7 +128,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	NSScrollView *as, *rs;
 
 	_all = [NSMutableArray array];
-	_win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 860, 560)
+	_win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1040, 560)
 					   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
 						     NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
 					     backing:NSBackingStoreBuffered
@@ -136,7 +138,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	root = _win.contentView;
 
 	_header = [NSTextField labelWithString:@""];
-	_header.frame = NSMakeRect(12, 528, 836, 22);
+	_header.frame = NSMakeRect(12, 528, 1016, 22);
 	_header.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
 	_header.font = [NSFont boldSystemFontOfSize:13];
 	[root addSubview:_header];
@@ -154,7 +156,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_reportTable = [self tableWithColumns:@[ @[ @"when", @"시간", @70 ], @[ @"status", @"상태", @80 ],
 						 @[ @"file", @"파일", @140 ], @[ @"counts", @"변경", @70 ],
 						 @[ @"text", @"요약", @400 ] ]];
-	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(320, 44, 528, 476)];
+	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(320, 44, 708, 476)];
 	rs.documentView = _reportTable;
 	rs.hasVerticalScroller = YES;
 	rs.borderType = NSBezelBorder;
@@ -162,7 +164,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	[root addSubview:rs];
 	_reportScroll = rs;
 
-	_permBar = [[NSView alloc] initWithFrame:NSMakeRect(320, 470, 528, 46)];
+	_permBar = [[NSView alloc] initWithFrame:NSMakeRect(320, 470, 708, 46)];
 	_permBar.wantsLayer = YES;
 	_permBar.layer.backgroundColor = [[NSColor.systemYellowColor colorWithAlphaComponent:0.28] CGColor];
 	_permBar.layer.cornerRadius = 6;
@@ -178,8 +180,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		NSButton *ok = [NSButton buttonWithTitle:@"허용" target:self action:@selector(allowPerm:)];
 		NSButton *no = [NSButton buttonWithTitle:@"거부" target:self action:@selector(denyPerm:)];
 
-		ok.frame = NSMakeRect(528 - 80 - 10, 9, 80, 28);
-		no.frame = NSMakeRect(528 - 160 - 16, 9, 80, 28);
+		ok.frame = NSMakeRect(708 - 80 - 10, 9, 80, 28);
+		no.frame = NSMakeRect(708 - 160 - 16, 9, 80, 28);
 		ok.bezelColor = NSColor.systemGreenColor;
 		ok.autoresizingMask = no.autoresizingMask = NSViewMinXMargin;
 		[_permBar addSubview:no];
@@ -191,6 +193,27 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	[root addSubview:[self button:@"중지 해제" x:128 w:80 action:@selector(clearStops:)]];
 	[root addSubview:[self button:@"이 보고 되돌리기" x:320 w:130 action:@selector(undoReport:)]];
 	[root addSubview:[self button:@"수정 요청…" x:456 w:100 action:@selector(askFix:)]];
+
+	[root addSubview:[self button:@"치우기" x:562 w:64 action:@selector(forgetSelected:)]];
+	[root addSubview:[self button:@"끝난 것 모두 치우기" x:630 w:130 action:@selector(forgetDone:)]];
+	{
+		NSButton *show = [NSButton checkboxWithTitle:@"치운 것 보기" target:self action:@selector(toggleHidden:)];
+		NSString *cur = run_cait(@[ @"guard", @"mode" ], NULL);
+
+		show.frame = NSMakeRect(770, 10, 110, 24);
+		show.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+		[root addSubview:show];
+		_guardMenu = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(884, 8, 148, 28) pullsDown:NO];
+		[_guardMenu addItemsWithTitles:@[ @"승인: 위험한 것만", @"승인: 전부 묻기", @"승인: 끄기" ]];
+		[_guardMenu itemAtIndex:0].representedObject = @"on";
+		[_guardMenu itemAtIndex:1].representedObject = @"all";
+		[_guardMenu itemAtIndex:2].representedObject = @"off";
+		[_guardMenu selectItemAtIndex:[cur containsString:@"all"] ? 1 : [cur containsString:@"off"] ? 2 : 0];
+		_guardMenu.target = self;
+		_guardMenu.action = @selector(setGuard:);
+		_guardMenu.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
+		[root addSubview:_guardMenu];
+	}
 
 	[_win makeKeyAndOrderFront:nil];
 	[NSTimer scheduledTimerWithTimeInterval:0.3
@@ -316,6 +339,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	for (NSString *n in order) {
 		BOOL known = NO;
 
+		if (!_showHidden && [by[n][@"hidden"] boolValue])
+			continue;
 		for (Agent *a in _agents)
 			if ([a.name isEqualToString:n])
 				known = YES;
@@ -325,6 +350,12 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 			return;
 		}
 	}
+	for (Agent *a in _agents)
+		if (!_showHidden && [by[a.name][@"hidden"] boolValue]) {	/* cleared from elsewhere (cait forget) */
+			_lastFeed = nil;
+			[self refresh];
+			return;
+		}
 	for (Agent *a in _agents) {
 		a.state = by[a.name][@"state"];
 		a.doing = by[a.name][@"doing"];
@@ -441,7 +472,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		NSDictionary *by = load_status(order);
 
 		for (NSString *n in order)
-			if (!byName[n]) {	/* working, but has not reported yet */
+			if (!byName[n] && (_showHidden || ![by[n][@"hidden"] boolValue])) {	/* working, but has not reported yet */
 				Agent *a = [Agent new];
 
 				a.name = n;
@@ -456,6 +487,11 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 			a.unreported = [by[a.name][@"unrep"] integerValue];
 			a.final = [by[a.name][@"final"] boolValue];
 		}
+		if (!_showHidden)	/* cleared from the list; their reports stay in the feed and on cait log */
+			[agents filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(Agent *a, NSDictionary *u) {
+				(void)u;
+				return ![by[a.name][@"hidden"] boolValue];
+			}]];
 	}
 	for (Agent *a in agents)
 		a.stopped = all_stop || [stopped containsObject:a.name];
@@ -591,6 +627,39 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		[self alert:@"일부 파일을 되돌리지 못했습니다" info:plan];
 	_lastFeed = nil;
 	[self refresh];
+}
+
+- (void)forgetSelected:(id)s
+{
+	Agent *a = [self selectedAgent];
+	int running = 0;
+
+	if (!a)
+		return;
+	forget_agents([a.name UTF8String], &running);
+	if (running)
+		[self alert:@"아직 실행 중입니다" info:@"실행 중인 에이전트는 치울 수 없습니다. 먼저 중지하세요."];
+	_lastFeed = nil;
+	[self refresh];
+}
+
+- (void)forgetDone:(id)s
+{
+	forget_agents(NULL, NULL);
+	_lastFeed = nil;
+	[self refresh];
+}
+
+- (void)toggleHidden:(NSButton *)b
+{
+	_showHidden = b.state == NSControlStateValueOn;
+	_lastFeed = nil;
+	[self refresh];
+}
+
+- (void)setGuard:(NSPopUpButton *)b
+{
+	run_cait(@[ @"guard", @"mode", b.selectedItem.representedObject ], NULL);
 }
 
 - (void)askFix:(id)s
