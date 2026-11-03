@@ -45,6 +45,7 @@
 @property BOOL showHidden;
 @property NSPopUpButton *guardMenu;
 @property NSScrollView *agentScroll, *reportScroll;
+@property NSMutableDictionary *askedReport;
 @property NSButton *askReportBtn, *ackBtn, *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
 @property NSTextField *emptyLabel, *noReports;
 @property NSMutableDictionary<NSString *, NSString *> *permInfo;	/* agent name -> its first waiting request */
@@ -587,10 +588,13 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		a.color = NSColor.systemRedColor;
 		a.sub = last.length ? [@"마지막 보고: " stringByAppendingString:last] : @"중단 요청이 걸려 있습니다";
 	} else if ([st isEqualToString:@"done"] && (a.unreported || !a.final)) {
+		BOOL asked = [_askedReport[a.name] isEqualToString:ask_key(a)];
+
 		a.rank = 1;
-		a.label = @"확인 필요";
+		a.label = asked ? @"보고 요청 중" : @"확인 필요";
 		a.color = NSColor.systemOrangeColor;
-		a.sub = a.unreported ? [NSString stringWithFormat:@"마지막 보고 뒤 수정 %ld건이 보고되지 않았습니다", (long)a.unreported]
+		a.sub = asked ? @"보고를 요청했습니다. 에이전트가 답하면 여기에 올라옵니다"
+		      : a.unreported ? [NSString stringWithFormat:@"마지막 보고 뒤 수정 %ld건이 보고되지 않았습니다", (long)a.unreported]
 				     : @"끝났지만 완료 보고가 오지 않았습니다";
 	} else if ([st isEqualToString:@"done"]) {
 		a.rank = 3;
@@ -658,6 +662,12 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_counts = [[parts componentsJoinedByString:@"  ·  "] stringByAppendingString:_allStop ? @"   ⛔ 전체 중단 요청됨" : @""];
 	[self updateBadge];
 	[self updateHeader];
+}
+
+/* a request stays "in progress" until the agent does something (its counts change) */
+static NSString *ask_key(Agent *a)
+{
+	return [NSString stringWithFormat:@"%@:%@:%ld:%d", a.name, a.state, (long)a.unreported, a.final];
 }
 
 static NSString *seen_key(Agent *a)
@@ -729,7 +739,10 @@ static NSString *seen_key(Agent *a)
 	_forgetBtn.enabled = a && !running;
 	_undoBtn.enabled = r && ![r.status isEqualToString:@"되돌림"] && ![r.status isEqualToString:@"완료 보고"];
 	_fixBtn.enabled = r != nil;
-	_askReportBtn.enabled = a && (a.unreported || !a.final) && !running;
+	BOOL isAsked = a && [_askedReport[a.name] isEqualToString:ask_key(a)];
+
+	_askReportBtn.title = isAsked ? @"요청 진행 중…" : @"보고 요청";
+	_askReportBtn.enabled = a && (a.unreported || !a.final) && !running && !isAsked;
 	_ackBtn.enabled = a && [a.state isEqualToString:@"done"] && (a.unreported || !a.final);
 }
 
@@ -756,11 +769,12 @@ static NSString *seen_key(Agent *a)
 					 @"다시 지시해 주세요.",
 					 a.name, (long)a.unreported];
 	run_cait(@[ @"tell", @"--agent", a.name, msg ], &st);
-	NSAlert *al = [NSAlert new];
-	al.messageText = st == 0 ? @"메인 에이전트에게 전달했습니다" : @"전달하지 못했습니다";
-	al.informativeText = st == 0 ? @"메인 에이전트가 다음 작업을 할 때 이 요청을 받아 에이전트에게 보고를 시킵니다. 보고가 오면 이 화면에 올라옵니다."
-				     : @"cait tell이 실패했습니다.";
-	[al runModal];
+	if (st == 0) {
+		if (!_askedReport)
+			_askedReport = [NSMutableDictionary dictionary];
+		_askedReport[a.name] = ask_key(a);
+	}
+	[self reloadAgents:a.name];
 }
 
 /* Say why the report list is empty instead of leaving a blank table. */
