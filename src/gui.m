@@ -46,7 +46,7 @@
 @property NSPopUpButton *guardMenu;
 @property NSScrollView *agentScroll, *reportScroll;
 @property NSButton *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
-@property NSTextField *emptyLabel;
+@property NSTextField *emptyLabel, *noReports;
 @property NSMutableDictionary<NSString *, NSString *> *permInfo;	/* agent name -> its first waiting request */
 @property BOOL allStop;
 @property NSMutableSet<NSString *> *seen;	/* "needs a look" agents the user has already looked at */
@@ -193,6 +193,14 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_emptyLabel.textColor = NSColor.secondaryLabelColor;
 	_emptyLabel.alignment = NSTextAlignmentCenter;
 	[root addSubview:_emptyLabel];
+
+	_noReports = [NSTextField wrappingLabelWithString:@""];
+	_noReports.frame = NSMakeRect(360, 300, 628, 120);
+	_noReports.textColor = NSColor.secondaryLabelColor;
+	_noReports.alignment = NSTextAlignmentCenter;
+	_noReports.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
+	_noReports.hidden = YES;
+	[root addSubview:_noReports];
 
 	_permBar = [[NSView alloc] initWithFrame:NSMakeRect(320, 440, 708, 64)];
 	_permBar.wantsLayer = YES;
@@ -714,6 +722,24 @@ static NSString *seen_key(Agent *a)
 	_fixBtn.enabled = r != nil;
 }
 
+/* Say why the report list is empty instead of leaving a blank table. */
+- (void)updateNoReports
+{
+	Agent *a = [self selectedAgent];
+	NSString *t = nil;
+
+	if (a && _shown.count == 0) {
+		if (a.unreported)
+			t = [NSString stringWithFormat:@"이 에이전트는 보고 없이 파일을 %ld번 고쳤습니다.\n\n무엇을 바꿨는지 에이전트가 알려 주지 않아 여기서는 볼 수 없습니다.\n메인 에이전트에게 \"%@가 뭘 바꿨는지 확인해 줘\"라고 말해 주세요.", (long)a.unreported, a.name];
+		else if ([a.state isEqualToString:@"working"] || [a.state isEqualToString:@"quiet"])
+			t = @"아직 보고가 없습니다.\n\n파일을 바꾸면 여기에 쉬운 말로 올라옵니다.";
+		else
+			t = @"보고 없이 끝났습니다.\n\n파일을 바꾸지 않고 읽거나 찾기만 했을 수 있습니다.";
+	}
+	_noReports.stringValue = t ?: @"";
+	_noReports.hidden = t == nil;
+}
+
 /* Fill the report table for the selected agent, newest at the bottom. */
 - (void)showSelectedAgentReports:(NSString *)keepRid
 {
@@ -725,6 +751,7 @@ static NSString *seen_key(Agent *a)
 		if ([r.agent isEqualToString:name])
 			[mine addObject:r];
 	_shown = mine;
+	[self updateNoReports];
 	[self updateHeader];
 	[_reportTable reloadData];
 	for (NSUInteger i = 0; keepRid && i < mine.count; i++)
