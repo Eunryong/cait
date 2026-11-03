@@ -801,6 +801,33 @@ static void hidden_remove(const char *name)
 	rename(tmp, path);
 }
 
+/* <dir>/ack: "name \t calls \t reports" for agents the user has looked at. It holds only while the agent
+ * does nothing more; any new tool call or report makes the agent "needs a look" again. */
+static int ack_matches(const char *name, int calls, int reports)
+{
+	char path[4200], line[600], w[300];
+	FILE *f;
+	int hit = 0;
+
+	snprintf(w, sizeof(w), "%s", name);
+	flatten(w);
+	path_in_dir(path, sizeof(path), "ack");
+	f = fopen(path, "r");
+	if (!f)
+		return 0;
+	while (fgets(line, sizeof(line), f)) {
+		char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+
+		if (!t2)
+			continue;
+		*t1 = *t2 = '\0';
+		if (strcmp(line, w) == 0)
+			hit = atoi(t1 + 1) == calls && atoi(t2 + 1) == reports;
+	}
+	fclose(f);
+	return hit;
+}
+
 /* Every agent cait knows of, with its state worked out; returns how many. */
 int status_load(agent_info_t *st, int max)
 {
@@ -907,6 +934,11 @@ int status_load(agent_info_t *st, int max)
 			snprintf(a->state, sizeof(a->state), "working");
 		else
 			snprintf(a->state, sizeof(a->state), "quiet");
+		if (a->done && ack_matches(a->name, a->calls, a->reports)) {
+			a->acked = 1;
+			a->unreported = 0;
+			a->final_ok = 1;
+		}
 		/* cleared from the list; an agent that is busy again comes back by itself */
 		if (hidden_has(a->name)) {
 			if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
@@ -960,6 +992,8 @@ int cmd_status(int argc, char **argv)
 		       a->idle);
 		if (a->seen_act && a->done && (a->final || !a->final_ok))
 			printf("  final report: %s\n", a->final ? "delivered" : "NOT delivered");
+		if (a->acked)
+			printf("  the user has looked at this agent's result\n");
 		if (a->unreported)
 			printf("  unreported edits: %d (edited after the last report)\n", a->unreported);
 		if (*a->task)
@@ -1012,6 +1046,47 @@ int forget_agents(const char *name, int *running)
 }
 
 /* cait forget: clear finished agents from the lists. Their reports stay in the feed. */
+int ack_agent(const char *name)
+{
+	agent_info_t *st = calloc(MAX_STAT, sizeof(*st));
+	char path[4200], w[300];
+	int n, hit = 0;
+	FILE *f;
+
+	if (!st || ensure_dir() < 0)
+		return 0;
+	n = status_load(st, MAX_STAT);
+	for (int i = 0; i < n; i++) {
+		if (strcmp(st[i].name, name) != 0 || !st[i].done)
+			continue;
+		snprintf(w, sizeof(w), "%s", name);
+		flatten(w);
+		path_in_dir(path, sizeof(path), "ack");
+		f = fopen(path, "a");
+		if (f) {
+			fprintf(f, "%s\t%d\t%d\n", w, st[i].calls, st[i].reports);
+			fclose(f);
+			hit = 1;
+		}
+	}
+	free(st);
+	return hit;
+}
+
+int cmd_ack(int argc, char **argv)
+{
+	if (argc < 2 || strcmp(argv[0], "--agent") != 0) {
+		fprintf(stderr, "usage: cait ack --agent NAME\n  Marks a finished agent as looked at. It counts as needing a look again if it does more.\n");
+		return 1;
+	}
+	if (!ack_agent(argv[1])) {
+		fprintf(stderr, "cait: %s is not a finished agent\n", argv[1]);
+		return 1;
+	}
+	printf("%s marked as looked at\n", argv[1]);
+	return 0;
+}
+
 int cmd_forget(int argc, char **argv)
 {
 	int n, running;

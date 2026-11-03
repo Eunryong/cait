@@ -17,7 +17,7 @@
 @interface Agent : NSObject
 @property NSString *name, *text, *state, *doing;	/* state/doing: from cait status */
 @property NSInteger count, idle, unreported;
-@property BOOL final;
+@property BOOL final, acked;
 @property BOOL stopped;
 @property NSInteger rank;	/* 0 needs you now, 1 needs a look, 2 running, 3 finished */
 @property NSString *label, *sub;	/* the state in words, and one line of what is going on */
@@ -45,7 +45,7 @@
 @property BOOL showHidden;
 @property NSPopUpButton *guardMenu;
 @property NSScrollView *agentScroll, *reportScroll;
-@property NSButton *askReportBtn, *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
+@property NSButton *askReportBtn, *ackBtn, *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
 @property NSTextField *emptyLabel, *noReports;
 @property NSMutableDictionary<NSString *, NSString *> *permInfo;	/* agent name -> its first waiting request */
 @property BOOL allStop;
@@ -109,7 +109,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 			doing = [NSString stringWithUTF8String:say];
 		}
 		by[name] = @{ @"state" : state, @"doing" : doing, @"idle" : @(st[i].idle), @"hidden" : @(st[i].hidden),
-			@"unrep" : @(st[i].unreported), @"final" : @(st[i].final_ok) };
+			@"unrep" : @(st[i].unreported), @"final" : @(st[i].final_ok), @"acked" : @(st[i].acked) };
 		[order addObject:name];
 	}
 	free(st);
@@ -150,7 +150,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	NSScrollView *as, *rs;
 
 	_all = [NSMutableArray array];
-	_win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1040, 560)
+	_win = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 1134, 560)
 					   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
 						     NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable
 					     backing:NSBackingStoreBuffered
@@ -161,7 +161,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	root = _win.contentView;
 
 	_header = [NSTextField labelWithString:@""];
-	_header.frame = NSMakeRect(12, 508, 1016, 44);
+	_header.frame = NSMakeRect(12, 508, 1110, 44);
 	_header.maximumNumberOfLines = 2;
 	_header.lineBreakMode = NSLineBreakByTruncatingTail;
 	_header.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
@@ -180,7 +180,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_reportTable = [self tableWithColumns:@[ @[ @"when", @"시간", @70 ], @[ @"status", @"상태", @80 ],
 						 @[ @"file", @"파일", @140 ], @[ @"counts", @"변경", @70 ],
 						 @[ @"text", @"요약", @400 ] ]];
-	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(320, 44, 708, 460)];
+	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(320, 44, 802, 460)];
 	rs.documentView = _reportTable;
 	rs.hasVerticalScroller = YES;
 	rs.borderType = NSBezelBorder;
@@ -195,7 +195,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	[root addSubview:_emptyLabel];
 
 	_noReports = [NSTextField wrappingLabelWithString:@""];
-	_noReports.frame = NSMakeRect(360, 300, 628, 120);
+	_noReports.frame = NSMakeRect(360, 300, 722, 120);
 	_noReports.textColor = NSColor.secondaryLabelColor;
 	_noReports.alignment = NSTextAlignmentCenter;
 	_noReports.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
@@ -239,27 +239,30 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_askReportBtn = [self button:@"보고 요청" x:214 w:96 action:@selector(askReport:)];
 	_askReportBtn.toolTip = @"'확인 필요' 에이전트에게 빠진 보고를 하게 하라고 메인 에이전트에게 전달합니다.";
 	[root addSubview:_askReportBtn];
-	_undoBtn = [self button:@"이 보고 되돌리기" x:320 w:130 action:@selector(undoReport:)];
+	_ackBtn = [self button:@"확인했어요" x:316 w:92 action:@selector(ackAgent:)];
+	_ackBtn.toolTip = @"결과를 직접 확인했다고 표시합니다. 이 에이전트가 더 일하기 전까지 '확인 필요'에서 빠집니다.";
+	[root addSubview:_ackBtn];
+	_undoBtn = [self button:@"이 보고 되돌리기" x:414 w:130 action:@selector(undoReport:)];
 	_undoBtn.toolTip = @"선택한 보고의 파일 변경을 되돌립니다. 되돌리기 전 파일은 백업됩니다.";
 	[root addSubview:_undoBtn];
-	_fixBtn = [self button:@"수정 요청…" x:456 w:100 action:@selector(askFix:)];
+	_fixBtn = [self button:@"수정 요청…" x:550 w:100 action:@selector(askFix:)];
 	_fixBtn.toolTip = @"고칠 점을 적으면 메인 에이전트가 받아서 다시 지시합니다.";
 	[root addSubview:_fixBtn];
 
-	_forgetBtn = [self button:@"치우기" x:562 w:64 action:@selector(forgetSelected:)];
+	_forgetBtn = [self button:@"치우기" x:656 w:64 action:@selector(forgetSelected:)];
 	_forgetBtn.toolTip = @"끝난 에이전트를 목록에서 치웁니다. 보고 기록은 남습니다.";
 	[root addSubview:_forgetBtn];
-	_forgetAllBtn = [self button:@"끝난 것 모두 치우기" x:630 w:130 action:@selector(forgetDone:)];
+	_forgetAllBtn = [self button:@"끝난 것 모두 치우기" x:724 w:130 action:@selector(forgetDone:)];
 	_forgetAllBtn.toolTip = @"끝난 에이전트를 모두 목록에서 치웁니다. 보고 기록은 남습니다.";
 	[root addSubview:_forgetAllBtn];
 	{
 		NSButton *show = [NSButton checkboxWithTitle:@"치운 것 보기" target:self action:@selector(toggleHidden:)];
 		NSString *cur = run_cait(@[ @"guard", @"mode" ], NULL);
 
-		show.frame = NSMakeRect(770, 10, 110, 24);
+		show.frame = NSMakeRect(864, 10, 110, 24);
 		show.autoresizingMask = NSViewMaxXMargin | NSViewMaxYMargin;
 		[root addSubview:show];
-		_guardMenu = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(884, 8, 148, 28) pullsDown:NO];
+		_guardMenu = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(978, 8, 148, 28) pullsDown:NO];
 		[_guardMenu addItemsWithTitles:@[ @"승인: 위험한 것만", @"승인: 전부 묻기", @"승인: 끄기" ]];
 		[_guardMenu itemAtIndex:0].representedObject = @"on";
 		[_guardMenu itemAtIndex:1].representedObject = @"all";
@@ -426,6 +429,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		a.idle = [by[a.name][@"idle"] longValue];
 		a.unreported = [by[a.name][@"unrep"] integerValue];
 		a.final = [by[a.name][@"final"] boolValue];
+		a.acked = [by[a.name][@"acked"] boolValue];
 	}
 	[self reloadAgents:selName];
 }
@@ -545,6 +549,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 			a.idle = [by[a.name][@"idle"] longValue];
 			a.unreported = [by[a.name][@"unrep"] integerValue];
 			a.final = [by[a.name][@"final"] boolValue];
+			a.acked = [by[a.name][@"acked"] boolValue];
 		}
 		if (!_showHidden)	/* cleared from the list; their reports stay in the feed and on cait log */
 			[agents filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(Agent *a, NSDictionary *u) {
@@ -590,7 +595,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	} else if ([st isEqualToString:@"done"]) {
 		a.rank = 3;
 		a.label = @"완료";
-		a.sub = last.length ? last : @"완료 보고가 도착했습니다";
+		a.sub = a.acked ? (last.length ? [@"확인함 · " stringByAppendingString:last] : @"확인함")
+				: last.length ? last : @"완료 보고가 도착했습니다";
 	} else if ([st isEqualToString:@"reported"]) {
 		a.rank = 3;
 		a.label = @"보고 있음";
@@ -724,6 +730,16 @@ static NSString *seen_key(Agent *a)
 	_undoBtn.enabled = r && ![r.status isEqualToString:@"되돌림"] && ![r.status isEqualToString:@"완료 보고"];
 	_fixBtn.enabled = r != nil;
 	_askReportBtn.enabled = a && (a.unreported || !a.final) && !running;
+	_ackBtn.enabled = a && [a.state isEqualToString:@"done"] && (a.unreported || !a.final);
+}
+
+/* The user looked at the result: stop asking for a look until the agent does more. */
+- (void)ackAgent:(id)sender
+{
+	Agent *a = [self selectedAgent];
+
+	if (a && ack_agent([a.name UTF8String]))
+		[self refresh];
 }
 
 /* An agent finished without reporting everything: have the main agent ask it to. */

@@ -36,7 +36,7 @@ int cmd_panel(int argc, char **argv);
 typedef struct {
 	char name[128], id[128], tool[128], target[512], task[512], text[512], state[16];
 	long first, last, last_report, idle;
-	int calls, done, reports, seen_act, unreported, final, final_ok, hidden;
+	int calls, done, reports, seen_act, unreported, final, final_ok, hidden, acked;
 	/* final_ok: the final report arrived, or the agent never reported or edited anything (nothing to wait for) */
 } agent_info_t;
 int status_load(agent_info_t *out, int max);
@@ -54,5 +54,7 @@ int cmd_perm(int argc, char **argv);
 int cmd_guard(int argc, char **argv);
 int cmd_forget(int argc, char **argv);
 int forget_agents(const char *name, int *running);
+int cmd_ack(int argc, char **argv);
+int ack_agent(const char *name);
 
 #endif

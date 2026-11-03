@@ -454,7 +454,7 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 	put(&o, "\033[J");
 
 	put(&o, "\033[%d;1H\033[7m", rows);
-	snprintf(buf, sizeof(buf), " ↑↓ 선택  s 중단  c 해제  x 치우기  X 끝난 것 모두  h 치운 것 보기  q 종료   %s", msg);
+	snprintf(buf, sizeof(buf), " ↑↓ 선택  s 중단  c 해제  k 확인함  x 치우기  X 끝난 것 모두  h 치운 것 보기  q 종료   %s", msg);
 	{
 		size_t n = fit(buf, cols, &used);
 
@@ -556,6 +556,13 @@ int cmd_panel(int argc, char **argv)
 							      : v.nagents ? forget_agents(v.agents[sel].name, &running) : 0;
 
 				snprintf(msg, sizeof(msg), running ? "아직 실행 중이라 치울 수 없습니다" : "%d개 치움 (기록은 남음)", n);
+				msg_at = time(NULL);
+				v.nagents = load_agents(v.agents);
+			} else if (c == 'k') {
+				if (v.nagents && ack_agent(v.agents[sel].name))
+					snprintf(msg, sizeof(msg), "%s 확인함", v.agents[sel].name);
+				else
+					snprintf(msg, sizeof(msg), "끝난 에이전트만 확인 처리할 수 있습니다");
 				msg_at = time(NULL);
 				v.nagents = load_agents(v.agents);
 			} else if (c == 'h') {
