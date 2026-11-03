@@ -45,7 +45,7 @@
 @property BOOL showHidden;
 @property NSPopUpButton *guardMenu;
 @property NSScrollView *agentScroll, *reportScroll;
-@property NSButton *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
+@property NSButton *askReportBtn, *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
 @property NSTextField *emptyLabel, *noReports;
 @property NSMutableDictionary<NSString *, NSString *> *permInfo;	/* agent name -> its first waiting request */
 @property BOOL allStop;
@@ -236,6 +236,9 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		clr.toolTip = @"걸어 둔 중지 요청을 모두 풉니다. 새 서브에이전트를 시키기 전에 누르세요.";
 		[root addSubview:clr];
 	}
+	_askReportBtn = [self button:@"보고 요청" x:214 w:96 action:@selector(askReport:)];
+	_askReportBtn.toolTip = @"'확인 필요' 에이전트에게 빠진 보고를 하게 하라고 메인 에이전트에게 전달합니다.";
+	[root addSubview:_askReportBtn];
 	_undoBtn = [self button:@"이 보고 되돌리기" x:320 w:130 action:@selector(undoReport:)];
 	_undoBtn.toolTip = @"선택한 보고의 파일 변경을 되돌립니다. 되돌리기 전 파일은 백업됩니다.";
 	[root addSubview:_undoBtn];
@@ -720,6 +723,28 @@ static NSString *seen_key(Agent *a)
 	_forgetBtn.enabled = a && !running;
 	_undoBtn.enabled = r && ![r.status isEqualToString:@"되돌림"] && ![r.status isEqualToString:@"완료 보고"];
 	_fixBtn.enabled = r != nil;
+	_askReportBtn.enabled = a && (a.unreported || !a.final) && !running;
+}
+
+/* An agent finished without reporting everything: have the main agent ask it to. */
+- (void)askReport:(id)sender
+{
+	Agent *a = [self selectedAgent];
+	NSString *msg;
+	int st;
+
+	if (!a)
+		return;
+	msg = [NSString stringWithFormat:@"%@ 에이전트가 보고 없이 파일을 고쳤거나 완료 보고 없이 끝났습니다(보고 안 한 수정 %ld번). "
+					 @"그 에이전트에게 지금까지 바꾼 파일과 내용을 cait report로 보고하고 --final로 마무리하라고 "
+					 @"다시 지시해 주세요.",
+					 a.name, (long)a.unreported];
+	run_cait(@[ @"tell", @"--agent", a.name, msg ], &st);
+	NSAlert *al = [NSAlert new];
+	al.messageText = st == 0 ? @"메인 에이전트에게 전달했습니다" : @"전달하지 못했습니다";
+	al.informativeText = st == 0 ? @"메인 에이전트가 다음 작업을 할 때 이 요청을 받아 에이전트에게 보고를 시킵니다. 보고가 오면 이 화면에 올라옵니다."
+				     : @"cait tell이 실패했습니다.";
+	[al runModal];
 }
 
 /* Say why the report list is empty instead of leaving a blank table. */
@@ -730,7 +755,7 @@ static NSString *seen_key(Agent *a)
 
 	if (a && _shown.count == 0) {
 		if (a.unreported)
-			t = [NSString stringWithFormat:@"이 에이전트는 보고 없이 파일을 %ld번 고쳤습니다.\n\n무엇을 바꿨는지 에이전트가 알려 주지 않아 여기서는 볼 수 없습니다.\n메인 에이전트에게 \"%@가 뭘 바꿨는지 확인해 줘\"라고 말해 주세요.", (long)a.unreported, a.name];
+			t = [NSString stringWithFormat:@"이 에이전트는 보고 없이 파일을 %ld번 고쳤습니다.\n\n무엇을 바꿨는지 에이전트가 알려 주지 않아 여기서는 볼 수 없습니다.\n위쪽 \"보고 요청\" 버튼을 누르면 메인 에이전트가 이 에이전트에게 보고를 다시 시킵니다.", (long)a.unreported];
 		else if ([a.state isEqualToString:@"working"] || [a.state isEqualToString:@"quiet"])
 			t = @"아직 보고가 없습니다.\n\n파일을 바꾸면 여기에 쉬운 말로 올라옵니다.";
 		else
