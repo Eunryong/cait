@@ -42,10 +42,12 @@ int status_load(agent_info_t *out, int max);
 
 /* permission requests waiting for the user */
 typedef struct {
-	char id[64], agent[128], tool[64], detail[512];
+	char id[64], agent[128], tool[64], detail[512], why[256];
 	long when;
 } perm_t;
 int perm_load(perm_t *out, int max);
+/* a tool call in plain words ("수정 중: cart.c") */
+void activity_label(const char *tool, const char *target, char *out, size_t size);
 int perm_answer(const char *id, int allow, const char *msg);
 int cmd_perm(int argc, char **argv);
 int cmd_guard(int argc, char **argv);

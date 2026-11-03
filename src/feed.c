@@ -696,6 +696,47 @@ static void json_str_out(FILE *o, const char *s)
 	put_json_string(o, s, strlen(s));
 }
 
+/* A tool call in words a person reads: "Edit /a/cart.c" -> "수정 중: cart.c". */
+static void clip_utf8(char *s, size_t max)
+{
+	size_t n = strlen(s);
+
+	if (n <= max)
+		return;
+	while (max > 0 && ((unsigned char)s[max] & 0xc0) == 0x80)
+		max--;
+	snprintf(s + max, 4, "…");
+}
+
+void activity_label(const char *tool, const char *target, char *out, size_t size)
+{
+	const char *base = strrchr(target, '/');
+	char t[600];
+
+	base = base && base[1] ? base + 1 : target;
+	snprintf(t, sizeof(t), "%s", target);
+	if (strcmp(tool, "Edit") == 0 || strcmp(tool, "MultiEdit") == 0 || strcmp(tool, "NotebookEdit") == 0) {
+		snprintf(out, size, "수정 중: %s", base);
+	} else if (strcmp(tool, "Write") == 0) {
+		snprintf(out, size, "파일 작성 중: %s", base);
+	} else if (strcmp(tool, "Read") == 0) {
+		snprintf(out, size, "읽는 중: %s", base);
+	} else if (strcmp(tool, "Bash") == 0) {
+		clip_utf8(t, 60);
+		snprintf(out, size, "명령 실행 중: %s", t);
+	} else if (strcmp(tool, "Grep") == 0 || strcmp(tool, "Glob") == 0) {
+		snprintf(out, size, "찾는 중");
+	} else if (strcmp(tool, "WebFetch") == 0 || strcmp(tool, "WebSearch") == 0) {
+		snprintf(out, size, "웹에서 확인 중");
+	} else if (strcmp(tool, "Agent") == 0 || strcmp(tool, "Task") == 0) {
+		snprintf(out, size, "다른 에이전트에게 일을 시키는 중");
+	} else if (strcmp(tool, "SubagentHandback") == 0) {
+		snprintf(out, size, "결과를 넘기는 중");
+	} else {
+		snprintf(out, size, "%s %s", tool, base);
+	}
+}
+
 /* <dir>/hidden: names of agents the user cleared from the lists. The feed itself is never touched. */
 static int hidden_has(const char *name)
 {
@@ -1021,7 +1062,7 @@ int perm_load(perm_t *out, int max)
 	while (d && (e = readdir(d)) && n < max) {
 		size_t l = strlen(e->d_name);
 		FILE *f;
-		char *p[5] = { 0 }, *c = line;
+		char *p[6] = { 0 }, *c = line;
 
 		if (l < 5 || strcmp(e->d_name + l - 4, ".req") != 0)
 			continue;
@@ -1037,14 +1078,17 @@ int perm_load(perm_t *out, int max)
 			continue;
 		}
 		fclose(f);
-		for (int i = 0; i < 5 && c; i++) {
+		for (int i = 0; i < 6 && c; i++) {
 			p[i] = c;
 			c = strchr(c, '\t');
 			if (c)
 				*c++ = '\0';
 		}
-		if (p[4])
-			p[4][strcspn(p[4], "\n")] = '\0';
+		for (int i = 5; i >= 4; i--)
+			if (p[i]) {
+				p[i][strcspn(p[i], "\n")] = '\0';
+				break;
+			}
 		snprintf(out[n].id, sizeof(out[n].id), "%.*s", (int)(l - 4), e->d_name);
 		out[n].when = p[0] ? atol(p[0]) : 0;
 		if (out[n].when < (long)time(NULL) - 120)
@@ -1052,6 +1096,7 @@ int perm_load(perm_t *out, int max)
 		snprintf(out[n].agent, sizeof(out[n].agent), "%s", p[2] && *p[2] ? p[2] : p[1] ? p[1] : "?");
 		snprintf(out[n].tool, sizeof(out[n].tool), "%s", p[3] ? p[3] : "");
 		snprintf(out[n].detail, sizeof(out[n].detail), "%s", p[4] ? p[4] : "");
+		snprintf(out[n].why, sizeof(out[n].why), "%s", p[5] ? p[5] : "");
 		n++;
 	}
 	if (d)
@@ -1112,6 +1157,8 @@ int cmd_perm(int argc, char **argv)
 			put_json_string(stdout, q[i].tool, strlen(q[i].tool));
 			printf(",\"detail\":");
 			put_json_string(stdout, q[i].detail, strlen(q[i].detail));
+			printf(",\"why\":");
+			put_json_string(stdout, q[i].why, strlen(q[i].why));
 			printf("}\n");
 		} else {
 			printf("%s\t%s\t%s %s\n", q[i].id, q[i].agent, q[i].tool, q[i].detail);
@@ -1127,17 +1174,19 @@ int cmd_perm(int argc, char **argv)
  * Put one question on the cait screen and wait for the user's answer.
  * Returns 1 (allow), 0 (deny, reason in msg) or -1 (no answer in time).
  */
-static int perm_ask(const char *in, const char *id, const char *tool, const char *detail, int wait_s,
-		    char *msg, size_t msize)
+static int perm_ask(const char *in, const char *id, const char *tool, const char *detail, const char *why_asked,
+		    int wait_s, char *msg, size_t msize)
 {
-	char name[256] = "", root[4200], path[4600], rid[64], t[64], d[1024], ans[1200];
+	char name[256] = "", root[4200], path[4600], rid[64], t[64], d[1024], y[256], ans[1200];
 	FILE *f;
 
 	msg[0] = '\0';
 	snprintf(t, sizeof(t), "%s", tool);
 	snprintf(d, sizeof(d), "%s", detail);
+	snprintf(y, sizeof(y), "%s", why_asked);
 	flatten(t);
 	flatten(d);
+	flatten(y);
 	if (*id && !agent_name_of(id, name, sizeof(name)))
 		snprintf(name, sizeof(name), "%.8s", id);
 	flatten(name);
@@ -1157,7 +1206,7 @@ static int perm_ask(const char *in, const char *id, const char *tool, const char
 	f = fopen(path, "w");
 	if (!f)
 		return -1;
-	fprintf(f, "%ld\t%s\t%s\t%s\t%s\n", (long)time(NULL), id, name, t, d);
+	fprintf(f, "%ld\t%s\t%s\t%s\t%s\t%s\n", (long)time(NULL), id, name, t, d, y);
 	fclose(f);
 
 	for (int waited = 0; waited < wait_s * 1000; waited += 200) {
@@ -1207,7 +1256,8 @@ static int perm_hook(const char *in)
 	json_value(in, "tool_name", tool, sizeof(tool));
 	if (!json_text(in, "command", detail, sizeof(detail)))
 		json_value(in, "file_path", detail, sizeof(detail));
-	r = perm_ask(in, id, tool, detail, w && atoi(w) > 0 ? atoi(w) : 40, msg, sizeof(msg));
+	r = perm_ask(in, id, tool, detail, "Claude Code가 사용자 확인을 요청했습니다", w && atoi(w) > 0 ? atoi(w) : 40,
+		     msg, sizeof(msg));
 	if (r == 1) {
 		printf("{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}\n");
 	} else if (r == 0) {
@@ -1248,6 +1298,34 @@ static const char *guard_default[] = {
 	"rm -rf", "rm -r ", "sudo ", "git push", "git reset --hard", "curl ", "wget ", "npm publish",
 	"chmod ", "mkfs", "dd if=", "DROP TABLE", ".env", ".ssh/", NULL
 };
+
+/* Why a phrase needs the user's OK, in plain words. */
+static const char *guard_reason(const char *pat)
+{
+	static const struct { const char *pat, *why; } r[] = {
+		{ "rm -rf", "파일이나 폴더를 통째로 지우는 명령입니다" },
+		{ "rm -r ", "폴더를 지우는 명령입니다" },
+		{ "sudo ", "관리자 권한으로 실행합니다" },
+		{ "git push", "변경을 원격 저장소에 올립니다" },
+		{ "git reset --hard", "저장하지 않은 변경을 버립니다" },
+		{ "curl ", "외부 인터넷에 접속합니다" },
+		{ "wget ", "외부 인터넷에서 파일을 받습니다" },
+		{ "npm publish", "패키지를 외부에 공개합니다" },
+		{ "chmod ", "파일 권한을 바꿉니다" },
+		{ "mkfs", "디스크를 지웁니다" },
+		{ "dd if=", "디스크나 파일을 덮어쓸 수 있습니다" },
+		{ "DROP TABLE", "데이터베이스 표를 지웁니다" },
+		{ ".env", "비밀번호 등이 든 설정 파일입니다" },
+		{ ".ssh/", "접속용 비밀 키가 든 폴더입니다" },
+	};
+	static char buf[600];
+
+	for (size_t i = 0; i < sizeof(r) / sizeof(r[0]); i++)
+		if (strcmp(pat, r[i].pat) == 0)
+			return r[i].why;
+	snprintf(buf, sizeof(buf), "승인 목록에 있는 문구(%s)가 들어 있습니다", pat);
+	return buf;
+}
 
 /* <dir>/guard: one substring per line. Absent: the defaults. */
 static int guard_match(const char *detail, char *hit, size_t size)
@@ -1410,7 +1488,10 @@ int cmd_check(int argc, char **argv)
 
 		if (*what && strcmp(gm, "off") != 0 && (every || guard_match(what, pat, sizeof(pat)))) {
 			/* ask the user on the cait screen; no answer counts as no */
-			r = perm_ask(in, id, tool, what, gw && atoi(gw) > 0 ? atoi(gw) : 120, msg, sizeof(msg));
+			r = perm_ask(in, id, tool, what, every && !guard_match(what, pat, sizeof(pat))
+							    ? "승인 방식이 '전부 묻기'로 설정되어 있습니다"
+							    : guard_reason(pat),
+				     gw && atoi(gw) > 0 ? atoi(gw) : 120, msg, sizeof(msg));
 			if (r != 1) {
 				fprintf(stderr, r == 0 ? "cait: the user denied this on the cait screen%s%s. Do not retry it; tell the main agent what you could not do.\n"
 							: "cait: the user did not answer in time, so this was not allowed%s%s. Do not retry it; tell the main agent what you could not do.\n",

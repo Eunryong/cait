@@ -22,16 +22,52 @@
 static volatile sig_atomic_t quit;
 static int show_hidden;	/* key h: also list agents the user cleared */
 
-/* status_load, minus the agents the user cleared from the list */
+static perm_t g_pend[8];	/* requests waiting for the user, refreshed with the agent list */
+static int g_npend;
+
+static const perm_t *waiting_for(const char *name)
+{
+	for (int i = 0; i < g_npend; i++)
+		if (strcmp(g_pend[i].agent, name) == 0)
+			return &g_pend[i];
+	return NULL;
+}
+
+/* 0 needs you now, 1 needs a look, 2 running, 3 finished */
+static int agent_rank(const agent_info_t *a)
+{
+	if (waiting_for(a->name))
+		return 0;
+	if (strcmp(a->state, "stopped") == 0 || (strcmp(a->state, "done") == 0 && (a->unreported || !a->final)))
+		return 1;
+	if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
+		return 2;
+	return 3;
+}
+
+/* status_load, minus the agents the user cleared, most urgent first */
 static int load_agents(agent_info_t *out)
 {
 	agent_info_t *all = calloc(MAX_AGENTS, sizeof(*all));
-	int n = all ? status_load(all, MAX_AGENTS) : 0, k = 0;
+	int n, k = 0;
 
+	g_npend = perm_load(g_pend, 8);
+	n = all ? status_load(all, MAX_AGENTS) : 0;
 	for (int i = 0; i < n; i++)
 		if (show_hidden || !all[i].hidden)
 			out[k++] = all[i];
 	free(all);
+	for (int i = 1; i < k; i++) {	/* stable insertion sort: rank, then most recently active */
+		agent_info_t t = out[i];
+		int j = i;
+
+		while (j > 0 && (agent_rank(&out[j - 1]) > agent_rank(&t) ||
+				 (agent_rank(&out[j - 1]) == agent_rank(&t) && out[j - 1].idle > t.idle))) {
+			out[j] = out[j - 1];
+			j--;
+		}
+		out[j] = t;
+	}
 	return k;
 }
 
@@ -293,8 +329,8 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 	used++;
 
 	if (ask) {
-		snprintf(buf, sizeof(buf), "\033[43;30;1m 승인 요청 \033[0m \033[1m%s\033[0m  %s %s    \033[1my\033[0m 허용  \033[1mn\033[0m 거부",
-			 ask->agent, ask->tool, ask->detail);
+		snprintf(buf, sizeof(buf), "\033[43;30;1m 승인 요청 \033[0m \033[1m%s\033[0m  %s %s  \033[2m(%s)\033[0m    \033[1my\033[0m 허용  \033[1mn\033[0m 거부",
+			 ask->agent, ask->tool, ask->detail, ask->why);
 		line_clipped(&o, buf, cols);
 		used++;
 	}
@@ -309,12 +345,17 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 
 		if (used >= rows - 4)
 			break;
-		if (strcmp(a->state, "quiet") == 0) {
+		const perm_t *wp = waiting_for(a->name);
+
+		if (wp) {
+			col = "31;1";
+			label = "⚠ 승인 대기";
+		} else if (strcmp(a->state, "quiet") == 0) {
 			col = "33";
-			label = "조용함";
+			label = "잠시 멈춤";
 		} else if (strcmp(a->state, "done") == 0) {
 			col = a->final && !a->unreported ? "2" : "33";
-			label = a->unreported ? "끝남·미보고 수정" : a->final ? "완료 보고됨" : "끝남·완료 보고 없음";
+			label = a->unreported || !a->final ? "확인 필요" : "완료";
 		} else if (strcmp(a->state, "stopped") == 0 || is_stopped(v, a->name)) {
 			col = "31";
 			label = "중단됨";
@@ -323,16 +364,22 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 			label = "보고만";
 		}
 		if (a->unreported)
-			snprintf(when, sizeof(when), "  미보고 수정 %d", a->unreported);
+			snprintf(when, sizeof(when), "  ⚠ 미보고 수정 %d", a->unreported);
 		else if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
 			snprintf(when, sizeof(when), "  %lds 전", a->idle);
-		if (*a->tool && strcmp(a->state, "done") != 0)
-			snprintf(what, sizeof(what), "%s %s", a->tool, a->target);
+		if (wp)
+			snprintf(what, sizeof(what), "%s %s  (%s)", wp->tool, wp->detail, wp->why);
+		else if (*a->tool && strcmp(a->state, "done") != 0)
+			activity_label(a->tool, a->target, what, sizeof(what));
+		else if (a->unreported)
+			snprintf(what, sizeof(what), "마지막 보고 뒤 수정 %d건이 보고되지 않았습니다", a->unreported);
+		else if (strcmp(a->state, "done") == 0 && !a->final)
+			snprintf(what, sizeof(what), "끝났지만 완료 보고가 오지 않았습니다");
 		else
 			snprintf(what, sizeof(what), "%s", a->text);
-		snprintf(buf, sizeof(buf), "%s\033[%dm%s\033[0m  \033[%sm%s\033[0m  보고 %d  도구 %d회%s  \033[2m%s",
+		snprintf(buf, sizeof(buf), "%s\033[%dm%s\033[0m  \033[%sm%s\033[0m  보고 %d건%s  \033[2m%s",
 			 i == sel ? "\033[7m▸ " : "  ", agent_color(a->name), a->name, col, label, a->reports,
-			 a->calls, when, what);
+			 when, what);
 		line_clipped(&o, buf, cols);
 		used++;
 	}

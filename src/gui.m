@@ -19,6 +19,9 @@
 @property NSInteger count, idle, unreported;
 @property BOOL final;
 @property BOOL stopped;
+@property NSInteger rank;	/* 0 needs you now, 1 needs a look, 2 running, 3 finished */
+@property NSString *label, *sub;	/* the state in words, and one line of what is going on */
+@property NSColor *color;
 @end
 @implementation Agent
 @end
@@ -42,6 +45,10 @@
 @property BOOL showHidden;
 @property NSPopUpButton *guardMenu;
 @property NSScrollView *agentScroll, *reportScroll;
+@property NSButton *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
+@property NSTextField *emptyLabel;
+@property NSMutableDictionary<NSString *, NSString *> *permInfo;	/* agent name -> its first waiting request */
+@property BOOL allStop;
 @end
 
 static NSData *read_dir_file(const char *name)
@@ -71,6 +78,17 @@ static NSString *run_cait(NSArray<NSString *> *args, int *status)
 	return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
 }
 
+static NSString *friendly_tool(NSString *t)
+{
+	if ([t isEqualToString:@"Bash"])
+		return @"명령 실행";
+	if ([t isEqualToString:@"Edit"] || [t isEqualToString:@"MultiEdit"])
+		return @"파일 수정";
+	if ([t isEqualToString:@"Write"])
+		return @"파일 작성";
+	return t;
+}
+
 /* cait status, by agent name */
 static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSString *> *order)
 {
@@ -83,9 +101,12 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		NSString *state = [NSString stringWithUTF8String:st[i].state];
 		NSString *doing = @"";
 
-		if (st[i].tool[0] && ![state isEqualToString:@"done"])
-			doing = [NSString stringWithFormat:@"%@ %@", [NSString stringWithUTF8String:st[i].tool],
-						       [NSString stringWithUTF8String:st[i].target]];
+		if (st[i].tool[0] && ![state isEqualToString:@"done"]) {
+			char say[700];
+
+			activity_label(st[i].tool, st[i].target, say, sizeof(say));
+			doing = [NSString stringWithUTF8String:say];
+		}
 		by[name] = @{ @"state" : state, @"doing" : doing, @"idle" : @(st[i].idle), @"hidden" : @(st[i].hidden),
 			@"unrep" : @(st[i].unreported), @"final" : @(st[i].final) };
 		[order addObject:name];
@@ -138,14 +159,15 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	root = _win.contentView;
 
 	_header = [NSTextField labelWithString:@""];
-	_header.frame = NSMakeRect(12, 528, 1016, 22);
+	_header.frame = NSMakeRect(12, 508, 1016, 44);
+	_header.maximumNumberOfLines = 2;
+	_header.lineBreakMode = NSLineBreakByTruncatingTail;
 	_header.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
-	_header.font = [NSFont boldSystemFontOfSize:13];
 	[root addSubview:_header];
 
-	_agentTable = [self tableWithColumns:@[ @[ @"name", @"에이전트", @90 ], @[ @"count", @"건수", @34 ],
-						@[ @"state", @"상태", @130 ] ]];
-	as = [[NSScrollView alloc] initWithFrame:NSMakeRect(12, 44, 300, 476)];
+	_agentTable = [self tableWithColumns:@[ @[ @"name", @"에이전트", @186 ], @[ @"state", @"상태", @104 ] ]];
+	_agentTable.rowHeight = 38;
+	as = [[NSScrollView alloc] initWithFrame:NSMakeRect(12, 44, 300, 460)];
 	as.documentView = _agentTable;
 	as.hasVerticalScroller = YES;
 	as.borderType = NSBezelBorder;
@@ -156,7 +178,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_reportTable = [self tableWithColumns:@[ @[ @"when", @"시간", @70 ], @[ @"status", @"상태", @80 ],
 						 @[ @"file", @"파일", @140 ], @[ @"counts", @"변경", @70 ],
 						 @[ @"text", @"요약", @400 ] ]];
-	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(320, 44, 708, 476)];
+	rs = [[NSScrollView alloc] initWithFrame:NSMakeRect(320, 44, 708, 460)];
 	rs.documentView = _reportTable;
 	rs.hasVerticalScroller = YES;
 	rs.borderType = NSBezelBorder;
@@ -164,15 +186,21 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	[root addSubview:rs];
 	_reportScroll = rs;
 
-	_permBar = [[NSView alloc] initWithFrame:NSMakeRect(320, 470, 708, 46)];
+	_emptyLabel = [NSTextField wrappingLabelWithString:@"아직 보이는 에이전트가 없습니다.\n\n메인 에이전트가 서브에이전트에게 일을 시키면 여기에 나타나고, 파일을 바꿀 때마다 쉬운 말로 요약이 올라옵니다."];
+	_emptyLabel.frame = NSMakeRect(28, 330, 256, 120);
+	_emptyLabel.textColor = NSColor.secondaryLabelColor;
+	_emptyLabel.alignment = NSTextAlignmentCenter;
+	[root addSubview:_emptyLabel];
+
+	_permBar = [[NSView alloc] initWithFrame:NSMakeRect(320, 440, 708, 64)];
 	_permBar.wantsLayer = YES;
 	_permBar.layer.backgroundColor = [[NSColor.systemYellowColor colorWithAlphaComponent:0.28] CGColor];
 	_permBar.layer.cornerRadius = 6;
 	_permBar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
 	_permBar.hidden = YES;
 	_permLabel = [NSTextField labelWithString:@""];
-	_permLabel.frame = NSMakeRect(10, 4, 340, 38);
-	_permLabel.maximumNumberOfLines = 2;
+	_permLabel.frame = NSMakeRect(10, 4, 520, 56);
+	_permLabel.maximumNumberOfLines = 3;
 	_permLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
 	_permLabel.autoresizingMask = NSViewWidthSizable;
 	[_permBar addSubview:_permLabel];
@@ -180,8 +208,8 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		NSButton *ok = [NSButton buttonWithTitle:@"허용" target:self action:@selector(allowPerm:)];
 		NSButton *no = [NSButton buttonWithTitle:@"거부" target:self action:@selector(denyPerm:)];
 
-		ok.frame = NSMakeRect(708 - 80 - 10, 9, 80, 28);
-		no.frame = NSMakeRect(708 - 160 - 16, 9, 80, 28);
+		ok.frame = NSMakeRect(708 - 80 - 10, 18, 80, 28);
+		no.frame = NSMakeRect(708 - 160 - 16, 18, 80, 28);
 		ok.bezelColor = NSColor.systemGreenColor;
 		ok.autoresizingMask = no.autoresizingMask = NSViewMinXMargin;
 		[_permBar addSubview:no];
@@ -189,13 +217,28 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	}
 	[root addSubview:_permBar];
 
-	[root addSubview:[self button:@"에이전트 중지" x:12 w:110 action:@selector(stopAgent:)]];
-	[root addSubview:[self button:@"중지 해제" x:128 w:80 action:@selector(clearStops:)]];
-	[root addSubview:[self button:@"이 보고 되돌리기" x:320 w:130 action:@selector(undoReport:)]];
-	[root addSubview:[self button:@"수정 요청…" x:456 w:100 action:@selector(askFix:)]];
+	_stopBtn = [self button:@"에이전트 중지" x:12 w:110 action:@selector(stopAgent:)];
+	_stopBtn.toolTip = @"선택한 에이전트를 멈추게 합니다. 에이전트는 다음 보고나 도구 호출 때 멈춥니다.";
+	[root addSubview:_stopBtn];
+	{
+		NSButton *clr = [self button:@"중지 해제" x:128 w:80 action:@selector(clearStops:)];
 
-	[root addSubview:[self button:@"치우기" x:562 w:64 action:@selector(forgetSelected:)]];
-	[root addSubview:[self button:@"끝난 것 모두 치우기" x:630 w:130 action:@selector(forgetDone:)]];
+		clr.toolTip = @"걸어 둔 중지 요청을 모두 풉니다. 새 서브에이전트를 시키기 전에 누르세요.";
+		[root addSubview:clr];
+	}
+	_undoBtn = [self button:@"이 보고 되돌리기" x:320 w:130 action:@selector(undoReport:)];
+	_undoBtn.toolTip = @"선택한 보고의 파일 변경을 되돌립니다. 되돌리기 전 파일은 백업됩니다.";
+	[root addSubview:_undoBtn];
+	_fixBtn = [self button:@"수정 요청…" x:456 w:100 action:@selector(askFix:)];
+	_fixBtn.toolTip = @"고칠 점을 적으면 메인 에이전트가 받아서 다시 지시합니다.";
+	[root addSubview:_fixBtn];
+
+	_forgetBtn = [self button:@"치우기" x:562 w:64 action:@selector(forgetSelected:)];
+	_forgetBtn.toolTip = @"끝난 에이전트를 목록에서 치웁니다. 보고 기록은 남습니다.";
+	[root addSubview:_forgetBtn];
+	_forgetAllBtn = [self button:@"끝난 것 모두 치우기" x:630 w:130 action:@selector(forgetDone:)];
+	_forgetAllBtn.toolTip = @"끝난 에이전트를 모두 목록에서 치웁니다. 보고 기록은 남습니다.";
+	[root addSubview:_forgetAllBtn];
 	{
 		NSButton *show = [NSButton checkboxWithTitle:@"치운 것 보기" target:self action:@selector(toggleHidden:)];
 		NSString *cur = run_cait(@[ @"guard", @"mode" ], NULL);
@@ -240,7 +283,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	NSMutableDictionary<NSString *, NSNumber *> *by = [NSMutableDictionary dictionary];
 	NSString *sel = [self selectedAgent].name, *newcomer = nil;
 	NSInteger sh = -1;
-	CGFloat h = _win.contentView.bounds.size.height, w = _win.contentView.bounds.size.width, top = h - 40;
+	CGFloat h = _win.contentView.bounds.size.height, w = _win.contentView.bounds.size.width, top = h - 52;
 
 	if (!_asked)
 		_asked = [NSMutableSet set];
@@ -276,15 +319,21 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 					}
 			}
 	}
-	if (!_pendingBy || ![_pendingBy isEqualToDictionary:by]) {
-		NSInteger row = _agentTable.selectedRow;
+	{
+		NSMutableDictionary<NSString *, NSString *> *info = [NSMutableDictionary dictionary];
 
+		for (int i = 0; i < n; i++) {
+			NSString *nm = [NSString stringWithUTF8String:q[i].agent];
+
+			if (!info[nm])
+				info[nm] = [NSString stringWithFormat:@"%@: %@", friendly_tool([NSString stringWithUTF8String:q[i].tool]),
+								     [NSString stringWithUTF8String:q[i].detail]];
+		}
+		_permInfo = info;
+	}
+	if (!_pendingBy || ![_pendingBy isEqualToDictionary:by]) {
 		_pendingBy = by;
-		_busy = YES;
-		[_agentTable reloadData];
-		if (row >= 0 && row < (NSInteger)_agents.count)
-			[_agentTable selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
-		_busy = NO;
+		[self reloadAgents:sel];
 	}
 
 	_permBar.hidden = sh < 0;
@@ -295,15 +344,18 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		NSInteger mine = [by[agent] integerValue];
 
 		_permId = [NSString stringWithUTF8String:q[sh].id];
-		_permLabel.stringValue = [NSString stringWithFormat:@"⚠ 이 에이전트가 승인을 요청합니다%@\n%@  %@",
+		NSString *why = [NSString stringWithUTF8String:q[sh].why];
+
+		_permLabel.stringValue = [NSString stringWithFormat:@"⚠ 이 에이전트가 승인을 요청합니다%@\n%@: %@\n%@",
 								    mine > 1 ? [NSString stringWithFormat:@" (대기 %ld건)", (long)mine] : @"",
-								    tool, detail];
+								    friendly_tool(tool), detail,
+								    why.length ? [@"이유: " stringByAppendingString:why] : @""];
 	} else {
 		_permId = nil;
 	}
-	_permBar.frame = NSMakeRect(320, top - 46, w - 332, 46);
+	_permBar.frame = NSMakeRect(320, top - 64, w - 332, 64);
 	_agentScroll.frame = NSMakeRect(12, 44, 300, top - 44);
-	_reportScroll.frame = NSMakeRect(320, 44, w - 332, top - 44 - (sh >= 0 ? 52 : 0));
+	_reportScroll.frame = NSMakeRect(320, 44, w - 332, top - 44 - (sh >= 0 ? 70 : 0));
 	free(q);
 }
 
@@ -331,7 +383,6 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	NSMutableArray<NSString *> *order = [NSMutableArray array];
 	NSDictionary *by = load_status(order);
 	NSString *selName = [self selectedAgent].name;
-	NSInteger row = _agentTable.selectedRow;
 
 	if (_busy)
 		return;
@@ -363,12 +414,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		a.unreported = [by[a.name][@"unrep"] integerValue];
 		a.final = [by[a.name][@"final"] boolValue];
 	}
-	_busy = YES;
-	[_agentTable reloadData];
-	if (row >= 0 && row < (NSInteger)_agents.count && [_agents[(NSUInteger)row].name isEqualToString:selName])
-		[_agentTable selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
-	_busy = NO;
-	[self updateHeader];
+	[self reloadAgents:selName];
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)a
@@ -496,41 +542,147 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	for (Agent *a in agents)
 		a.stopped = all_stop || [stopped containsObject:a.name];
 
-	_busy = YES;	/* our own selection changes must not trigger another refresh */
 	_agents = agents;
 	_all = all;
-	[_agentTable reloadData];
-	NSUInteger ai = 0;
-	for (NSUInteger i = 0; i < agents.count; i++)
-		if ([agents[i].name isEqualToString:selName])
-			ai = i;
-	if (agents.count)
-		[_agentTable selectRowIndexes:[NSIndexSet indexSetWithIndex:ai] byExtendingSelection:NO];
+	_allStop = all_stop;
+	[self reloadAgents:selName];
+	_busy = YES;	/* our own selection changes must not trigger another refresh */
 	[self showSelectedAgentReports:selRid];
 	_busy = NO;
+}
 
-	_counts = [NSString stringWithFormat:@"에이전트 %lu  보고 %lu%@", (unsigned long)agents.count,
-							 (unsigned long)all.count, all_stop ? @"   ⛔ 전체 중단 요청됨" : @""];
+/* Work out how each agent looks in the list: its state in words, colour and one line of detail. */
+- (void)decorate:(Agent *)a
+{
+	NSString *st = a.state ?: @"", *last = a.text.length ? a.text : @"";
+	NSInteger waiting = [_pendingBy[a.name] integerValue];
+
+	a.color = NSColor.secondaryLabelColor;
+	if (waiting) {
+		a.rank = 0;
+		a.label = [NSString stringWithFormat:@"⚠ 승인 대기 %ld", (long)waiting];
+		a.color = NSColor.systemRedColor;
+		a.sub = _permInfo[a.name] ?: @"허락을 기다립니다";
+	} else if (a.stopped) {
+		a.rank = 1;
+		a.label = @"중단됨";
+		a.color = NSColor.systemRedColor;
+		a.sub = last.length ? [@"마지막 보고: " stringByAppendingString:last] : @"중단 요청이 걸려 있습니다";
+	} else if ([st isEqualToString:@"done"] && (a.unreported || !a.final)) {
+		a.rank = 1;
+		a.label = @"확인 필요";
+		a.color = NSColor.systemOrangeColor;
+		a.sub = a.unreported ? [NSString stringWithFormat:@"마지막 보고 뒤 수정 %ld건이 보고되지 않았습니다", (long)a.unreported]
+				     : @"끝났지만 완료 보고가 오지 않았습니다";
+	} else if ([st isEqualToString:@"done"]) {
+		a.rank = 3;
+		a.label = @"완료";
+		a.sub = last.length ? last : @"완료 보고가 도착했습니다";
+	} else if ([st isEqualToString:@"reported"]) {
+		a.rank = 3;
+		a.label = @"보고 있음";
+		a.sub = last;
+	} else if ([st isEqualToString:@"quiet"]) {
+		a.rank = 2;
+		a.label = @"잠시 멈춤";
+		a.color = NSColor.systemOrangeColor;
+		a.sub = [NSString stringWithFormat:@"%ld초째 조용함%@", (long)a.idle,
+						   a.doing.length ? [@" · 마지막: " stringByAppendingString:a.doing] : @""];
+	} else {
+		a.rank = 2;
+		a.label = @"진행 중";
+		a.color = NSColor.systemGreenColor;
+		a.sub = a.doing.length ? a.doing : @"작업을 시작하는 중";
+	}
+}
+
+/*
+ * Redraw the agent list: needs-you-now first, then needs-a-look, running, finished.
+ * Keeps the same agent selected, and updates the summary, Dock badge and buttons.
+ */
+- (void)reloadAgents:(NSString *)selName
+{
+	NSInteger n[4] = { 0, 0, 0, 0 }, att;
+	NSMutableArray<NSString *> *parts = [NSMutableArray array];
+	NSUInteger ai = NSNotFound;
+
+	for (Agent *a in _agents)
+		[self decorate:a];
+	_agents = [_agents sortedArrayUsingComparator:^NSComparisonResult(Agent *x, Agent *y) {
+		if (x.rank != y.rank)
+			return x.rank < y.rank ? NSOrderedAscending : NSOrderedDescending;
+		if (x.idle != y.idle)
+			return x.idle < y.idle ? NSOrderedAscending : NSOrderedDescending;
+		return NSOrderedSame;
+	}];
+	for (Agent *a in _agents)
+		n[a.rank]++;
+	for (NSUInteger i = 0; i < _agents.count; i++)
+		if ([_agents[i].name isEqualToString:selName])
+			ai = i;
+	_busy = YES;
+	[_agentTable reloadData];
+	if (_agents.count)
+		[_agentTable selectRowIndexes:[NSIndexSet indexSetWithIndex:ai == NSNotFound ? 0 : ai] byExtendingSelection:NO];
+	_busy = NO;
+	_emptyLabel.hidden = _agents.count > 0;
+
+	[parts addObject:[NSString stringWithFormat:@"에이전트 %lu", (unsigned long)_agents.count]];
+	if (n[0])
+		[parts addObject:[NSString stringWithFormat:@"승인 대기 %ld", (long)n[0]]];
+	if (n[1])
+		[parts addObject:[NSString stringWithFormat:@"확인 필요 %ld", (long)n[1]]];
+	if (n[2])
+		[parts addObject:[NSString stringWithFormat:@"진행 중 %ld", (long)n[2]]];
+	if (n[3])
+		[parts addObject:[NSString stringWithFormat:@"완료 %ld", (long)n[3]]];
+	_counts = [[parts componentsJoinedByString:@"  ·  "] stringByAppendingString:_allStop ? @"   ⛔ 전체 중단 요청됨" : @""];
+	att = n[0] + n[1];
+	NSApp.dockTile.badgeLabel = att ? [NSString stringWithFormat:@"%ld", (long)att] : nil;
+	_win.title = att ? [NSString stringWithFormat:@"cait — 확인할 것 %ld", (long)att] : @"cait";
 	[self updateHeader];
 }
 
-/* Counts, plus the selected agent's task: the first line of what the main agent asked it. */
+/* Summary on the first line; on the second, what the selected agent was asked and what it does now. */
 - (void)updateHeader
 {
-	NSString *name = [self selectedAgent].name, *task = @"";
+	Agent *sel = [self selectedAgent];
+	NSMutableArray<NSString *> *parts = [NSMutableArray array];
+	NSMutableAttributedString *as = [NSMutableAttributedString new];
+	NSDictionary *big = @{ NSFontAttributeName : [NSFont boldSystemFontOfSize:14] };
+	NSDictionary *small = @{ NSFontAttributeName : [NSFont systemFontOfSize:12],
+				 NSForegroundColorAttributeName : NSColor.secondaryLabelColor };
 
-	if (name) {
-		NSString *rel = [@"brief/" stringByAppendingString:[name stringByReplacingOccurrencesOfString:@"/" withString:@"_"]];
+	if (sel) {
+		NSString *rel = [@"brief/" stringByAppendingString:[sel.name stringByReplacingOccurrencesOfString:@"/" withString:@"_"]];
 		NSData *d = read_dir_file([rel UTF8String]);
 		NSString *t = d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil;
 
 		if (t.length)
-			task = [@"   —   " stringByAppendingString:[t componentsSeparatedByString:@"\n"][0]];
+			[parts addObject:[@"시킨 일: " stringByAppendingString:[t componentsSeparatedByString:@"\n"][0]]];
+		if (sel.sub.length)
+			[parts addObject:sel.sub];
+	} else {
+		[parts addObject:@"왼쪽에서 에이전트를 고르면 시킨 일과 보고가 보입니다."];
 	}
-	Agent *sel = [self selectedAgent];
-	NSString *now = sel.doing.length ? [NSString stringWithFormat:@"   ·   %@ (%lds 전)", sel.doing, (long)sel.idle] : @"";
+	[as appendAttributedString:[[NSAttributedString alloc] initWithString:_counts ?: @"" attributes:big]];
+	[as appendAttributedString:[[NSAttributedString alloc]
+		initWithString:[@"\n" stringByAppendingString:[parts componentsJoinedByString:@"   ·   "]] attributes:small]];
+	_header.attributedStringValue = as;
+	[self updateButtons];
+}
 
-	_header.stringValue = [[(_counts ?: @"") stringByAppendingString:task] stringByAppendingString:now];
+/* Only offer what makes sense for the selection. */
+- (void)updateButtons
+{
+	Agent *a = [self selectedAgent];
+	Report *r = [self selectedReport];
+	BOOL running = a && ([a.state isEqualToString:@"working"] || [a.state isEqualToString:@"quiet"]);
+
+	_stopBtn.enabled = running && !a.stopped;
+	_forgetBtn.enabled = a && !running;
+	_undoBtn.enabled = r && ![r.status isEqualToString:@"되돌림"] && ![r.status isEqualToString:@"완료 보고"];
+	_fixBtn.enabled = r != nil;
 }
 
 /* Fill the report table for the selected agent, newest at the bottom. */
@@ -559,8 +711,12 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 
 - (void)tableViewSelectionDidChange:(NSNotification *)n
 {
-	if (_busy || n.object != _agentTable)
+	if (_busy)
 		return;
+	if (n.object != _agentTable) {
+		[self updateButtons];
+		return;
+	}
 	[self showSelectedAgentReports:nil];
 }
 
@@ -710,36 +866,39 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	if (t == _agentTable) {
 		Agent *a = _agents[(NSUInteger)r];
 
-		if ([id isEqualToString:@"name"]) {
-			f.stringValue = a.name;
-		} else if ([id isEqualToString:@"count"]) {
-			f.stringValue = [NSString stringWithFormat:@"%ld", (long)a.count];
-		} else {
-			NSString *st = a.state ?: @"";
-			NSInteger waiting = [_pendingBy[a.name] integerValue];
+		if ([id isEqualToString:@"name"]) {	/* two lines: the name, then what is going on */
+			NSTableCellView *v = [t makeViewWithIdentifier:@"agentcell" owner:self];
+			NSTextField *top, *bottom;
 
-			if (waiting) {
-				f.stringValue = [NSString stringWithFormat:@"⚠ 승인 대기 %ld", (long)waiting];
-				f.textColor = NSColor.systemRedColor;
-				f.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
-			} else if (a.stopped) {
-				f.stringValue = @"중단됨";
-				f.textColor = NSColor.systemRedColor;
-			} else if ([st isEqualToString:@"done"]) {
-				f.stringValue = a.unreported ? [NSString stringWithFormat:@"끝남·미보고 수정 %ld", (long)a.unreported]
-							     : a.final ? @"완료 보고됨" : @"끝남·완료 보고 없음";
-				f.textColor = a.final && !a.unreported ? NSColor.secondaryLabelColor : NSColor.systemOrangeColor;
-			} else if ([st isEqualToString:@"quiet"]) {
-				f.stringValue = @"조용함";
-				f.textColor = NSColor.systemOrangeColor;
-			} else if ([st isEqualToString:@"reported"]) {
-				f.stringValue = @"보고만";
-				f.textColor = NSColor.secondaryLabelColor;
-			} else {
-				f.stringValue = @"진행 중";
-				f.textColor = NSColor.systemGreenColor;
+			if (!v) {
+				v = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 186, 38)];
+				v.identifier = @"agentcell";
+				top = [NSTextField labelWithString:@""];
+				top.tag = 1;
+				top.frame = NSMakeRect(2, 19, 182, 17);
+				top.font = [NSFont boldSystemFontOfSize:13];
+				top.lineBreakMode = NSLineBreakByTruncatingTail;
+				top.autoresizingMask = NSViewWidthSizable;
+				bottom = [NSTextField labelWithString:@""];
+				bottom.tag = 2;
+				bottom.frame = NSMakeRect(2, 2, 182, 15);
+				bottom.font = [NSFont systemFontOfSize:11];
+				bottom.textColor = NSColor.secondaryLabelColor;
+				bottom.lineBreakMode = NSLineBreakByTruncatingTail;
+				bottom.autoresizingMask = NSViewWidthSizable;
+				[v addSubview:top];
+				[v addSubview:bottom];
 			}
+			((NSTextField *)[v viewWithTag:1]).stringValue = a.name;
+			bottom = [v viewWithTag:2];
+			bottom.stringValue = a.sub ?: @"";
+			bottom.toolTip = a.sub;
+			return v;
 		}
+		f.stringValue = a.label ?: @"";
+		f.textColor = a.color ?: NSColor.labelColor;
+		if (a.rank <= 1)
+			f.font = [NSFont boldSystemFontOfSize:NSFont.systemFontSize];
 	} else {
 		Report *p = _shown[(NSUInteger)r];
 
