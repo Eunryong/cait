@@ -6,9 +6,9 @@ description: Set how finely subagent change reports are grouped for the user. Us
 Subagents send the user a short summary of each file change with `cait report` (see the cait-report skill). You, the main agent, choose the unit, so a large change does not flood the user. Set it before you launch subagents:
 
 ```bash
-/Users/eunryong/develop/c_tools/cait level           # show the current level
-/Users/eunryong/develop/c_tools/cait level files     # one report per file (default)
-/Users/eunryong/develop/c_tools/cait level group     # related files bundled into one report
+${CAIT:-cait} level           # show the current level
+${CAIT:-cait} level files     # one report per file (default)
+${CAIT:-cait} level group     # related files bundled into one report
 ```
 
 Pick by the size of the work:
@@ -20,8 +20,8 @@ Subagents read the level and follow it; the report still shows the real files an
 To get the reports yourself (intermediate results while subagents run, or a summary for the user), read the feed:
 
 ```bash
-/Users/eunryong/develop/c_tools/cait log --last 20                      # readable rows
-/Users/eunryong/develop/c_tools/cait log --json --agent booking-fix     # one JSON object per line
+${CAIT:-cait} log --last 20                      # readable rows
+${CAIT:-cait} log --json --agent booking-fix     # one JSON object per line
 ```
 
 Each entry has the files, a status (created/updated/deleted/mixed), added/removed line counts, and the agent's own summary. Tell each subagent in its prompt to use the cait-report skill.
@@ -29,9 +29,9 @@ Each entry has the files, a status (created/updated/deleted/mixed), added/remove
 The user can stop an agent after reading its reports. When they say to stop (or you decide a direction is wrong), run:
 
 ```bash
-/Users/eunryong/develop/c_tools/cait stop --agent booking-fix "wrong approach"   # one agent
-/Users/eunryong/develop/c_tools/cait stop "reason"                               # every agent
-/Users/eunryong/develop/c_tools/cait stop --clear                                # before starting new work
+${CAIT:-cait} stop --agent booking-fix "wrong approach"   # one agent
+${CAIT:-cait} stop "reason"                               # every agent
+${CAIT:-cait} stop --clear                                # before starting new work
 ```
 
 The agent halts at its next `cait report`. A stop stays until cleared, so clear it before you launch new subagents.

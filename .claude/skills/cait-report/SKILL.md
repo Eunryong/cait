@@ -7,22 +7,22 @@ The user is not reading your log. `cait report` puts a short summary of a file c
 
 ```bash
 # Right after you finish a file: what role that part of the file plays and what you did to it.
-/Users/eunryong/develop/c_tools/cait report --agent "booking-fix" --file /abs/path/src/booking/create.c "When a booking is created, the duplicate-request check now matches on the request key instead of the booking status"
+${CAIT:-cait} report --agent "booking-fix" --file /abs/path/src/booking/create.c "When a booking is created, the duplicate-request check now matches on the request key instead of the booking status"
 
-/Users/eunryong/develop/c_tools/cait report --agent "calc" --file /abs/path/calc.c "Added the four basic operations (add, subtract, multiply, divide) to the calculator"
+${CAIT:-cait} report --agent "calc" --file /abs/path/calc.c "Added the four basic operations (add, subtract, multiply, divide) to the calculator"
 ```
 
 Before your first report, check how the user wants it grouped:
 
 ```bash
-/Users/eunryong/develop/c_tools/cait level
+${CAIT:-cait} level
 ```
 
 - `files`: one report per file, as above.
 - `group`: bundle related files into ONE report by repeating `--file`; cait adds up the changed lines. Use it when you touch many files.
 
 ```bash
-/Users/eunryong/develop/c_tools/cait report --agent "login" --file /abs/a.c --file /abs/b.c --file /abs/c.c "The login check now also rejects expired tokens and starts a fresh session"
+${CAIT:-cait} report --agent "login" --file /abs/a.c --file /abs/b.c --file /abs/c.c "The login check now also rejects expired tokens and starts a fresh session"
 ```
 
 If `cait report` ends with `STOP: ...` (exit code 3), the user wants you to halt. Make no more edits, run no more commands, and answer right away with what is done and what is left.

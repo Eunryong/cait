@@ -4,21 +4,21 @@
       {
         "matcher": "*",
         "hooks": [
-          { "type": "command", "command": "/Users/eunryong/develop/c_tools/cait check", "timeout": 180 }
+          { "type": "command", "command": "${CAIT:-cait} check", "timeout": 180 }
         ]
       }
     ],
     "PermissionRequest": [
       {
         "hooks": [
-          { "type": "command", "command": "/Users/eunryong/develop/c_tools/cait check --permission", "timeout": 60 }
+          { "type": "command", "command": "${CAIT:-cait} check --permission", "timeout": 60 }
         ]
       }
     ],
     "SubagentStop": [
       {
         "hooks": [
-          { "type": "command", "command": "/Users/eunryong/develop/c_tools/cait check --done" }
+          { "type": "command", "command": "${CAIT:-cait} check --done" }
         ]
       }
     ]
