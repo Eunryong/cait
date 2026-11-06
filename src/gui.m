@@ -20,7 +20,7 @@
 
 @interface Agent : NSObject
 @property NSString *name, *text, *state, *doing;	/* state/doing: from cait status */
-@property NSInteger count, idle, unreported;
+@property NSInteger count, idle, unreported, reverted, fileReports;	/* reverted: reports the user undid */
 @property BOOL final, acked;
 @property BOOL stopped;
 @property NSInteger rank;	/* 0 needs you now, 1 needs a look, 2 running, 3 finished */
@@ -172,6 +172,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	root = _win.contentView;
 
 	_header = [NSTextField labelWithString:@""];
+	_header.selectable = YES;
 	_header.frame = NSMakeRect(12, 508, 1110, 44);
 	_header.maximumNumberOfLines = 2;
 	_header.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -198,6 +199,14 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	rs.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 	[root addSubview:rs];
 	_reportScroll = rs;
+	{
+		NSMenu *m = [NSMenu new];
+
+		[m addItemWithTitle:@"요약 복사" action:@selector(copySummary:) keyEquivalent:@""].target = self;
+		[m addItemWithTitle:@"파일 경로 복사" action:@selector(copyPath:) keyEquivalent:@""].target = self;
+		[m addItemWithTitle:@"이 줄 전체 복사" action:@selector(copyLine:) keyEquivalent:@""].target = self;
+		_reportTable.menu = m;
+	}
 
 	_previewScroll = [NSTextView scrollableTextView];
 	_previewText = _previewScroll.documentView;
@@ -231,6 +240,7 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	_permBar.autoresizingMask = NSViewWidthSizable | NSViewMinYMargin;
 	_permBar.hidden = YES;
 	_permLabel = [NSTextField labelWithString:@""];
+	_permLabel.selectable = YES;
 	_permLabel.frame = NSMakeRect(10, 4, 520, 56);
 	_permLabel.maximumNumberOfLines = 3;
 	_permLabel.lineBreakMode = NSLineBreakByTruncatingMiddle;
@@ -658,6 +668,10 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		}
 		a.count++;
 		a.text = rp.text;
+		if ([rp.status isEqualToString:@"reverted"])
+			a.reverted++;
+		else if (![rp.status isEqualToString:@"final"])
+			a.fileReports++;
 	}
 	for (Report *r in all)
 		r.status = labels[r.status] ?: @"변경됨";
@@ -746,6 +760,13 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		a.label = @"진행 중";
 		a.color = NSColor.systemGreenColor;
 		a.sub = a.doing.length ? a.doing : @"작업을 시작하는 중";
+	}
+	/* The user undid some of its work: "done" would be misleading, though there is nothing left for them to do. */
+	if (a.rank == 3 && a.reverted > 0) {
+		BOOL all = a.reverted >= a.fileReports;
+
+		a.label = all ? @"전부 되돌림" : @"일부 되돌림";
+		a.sub = [NSString stringWithFormat:@"보고 %ld건 중 %ld건을 되돌렸습니다", (long)MAX(a.fileReports, a.reverted), (long)a.reverted];
 	}
 }
 
@@ -906,6 +927,60 @@ static NSString *seen_key(Agent *a)
 		_askedReport[a.name] = ask_key(a);
 	}
 	[self reloadAgents:a.name];
+}
+
+/* Copy: the selected report as one line, or just one part of it (right-click menu). */
+- (NSString *)reportLine:(Report *)r
+{
+	return [NSString stringWithFormat:@"%@  %@  %@  %@  %@", r.when, r.agent, r.status, r.file, r.text];
+}
+
+- (void)putOnPasteboard:(NSString *)text
+{
+	if (!text.length)
+		return;
+	[NSPasteboard.generalPasteboard clearContents];
+	[NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString];
+}
+
+- (void)copy:(id)sender
+{
+	NSString *t = nil;
+
+	if ([_win.firstResponder isKindOfClass:NSTableView.class]) {
+		if (_win.firstResponder == _reportTable && [self selectedReport])
+			t = [self reportLine:[self selectedReport]];
+		else if (_win.firstResponder == _agentTable && [self selectedAgent])
+			t = [NSString stringWithFormat:@"%@  %@  %@", [self selectedAgent].name, [self selectedAgent].label ?: @"",
+							[self selectedAgent].sub ?: @""];
+	}
+	[self putOnPasteboard:t];
+}
+
+- (void)copySummary:(id)sender
+{
+	[self putOnPasteboard:[self clickedReport].text];
+}
+
+- (void)copyPath:(id)sender
+{
+	Report *r = [self clickedReport];
+
+	[self putOnPasteboard:[r.paths componentsJoinedByString:@"\n"]];
+}
+
+- (void)copyLine:(id)sender
+{
+	Report *r = [self clickedReport];
+
+	[self putOnPasteboard:r ? [self reportLine:r] : nil];
+}
+
+- (Report *)clickedReport
+{
+	NSInteger row = _reportTable.clickedRow >= 0 ? _reportTable.clickedRow : _reportTable.selectedRow;
+
+	return row >= 0 && (NSUInteger)row < _shown.count ? _shown[(NSUInteger)row] : nil;
 }
 
 /* Say why the report list is empty instead of leaving a blank table. */
@@ -1108,6 +1183,8 @@ static NSString *seen_key(Agent *a)
 - (NSView *)tableView:(NSTableView *)t viewForTableColumn:(NSTableColumn *)c row:(NSInteger)r
 {
 	NSTextField *f = [NSTextField labelWithString:@""];
+
+	f.selectable = YES;	/* so the text can be copied */
 	NSString *id = c.identifier;
 
 	f.lineBreakMode = NSLineBreakByTruncatingTail;
@@ -1122,12 +1199,14 @@ static NSString *seen_key(Agent *a)
 				v = [[NSTableCellView alloc] initWithFrame:NSMakeRect(0, 0, 186, 38)];
 				v.identifier = @"agentcell";
 				top = [NSTextField labelWithString:@""];
+				top.selectable = YES;
 				top.tag = 1;
 				top.frame = NSMakeRect(2, 19, 182, 17);
 				top.font = [NSFont boldSystemFontOfSize:13];
 				top.lineBreakMode = NSLineBreakByTruncatingTail;
 				top.autoresizingMask = NSViewWidthSizable;
 				bottom = [NSTextField labelWithString:@""];
+				bottom.selectable = YES;
 				bottom.tag = 2;
 				bottom.frame = NSMakeRect(2, 2, 182, 15);
 				bottom.font = [NSFont systemFontOfSize:11];
@@ -1179,8 +1258,9 @@ static NSString *seen_key(Agent *a)
 static void install_menus(void)
 {
 	NSMenu *bar = [NSMenu new];
-	NSMenuItem *appItem = [NSMenuItem new], *winItem = [NSMenuItem new];
+	NSMenuItem *appItem = [NSMenuItem new], *editItem = [NSMenuItem new], *winItem = [NSMenuItem new];
 	NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"cait"], *winMenu = [[NSMenu alloc] initWithTitle:@"창"];
+	NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"편집"];
 
 	[appMenu addItemWithTitle:@"cait 숨기기" action:@selector(hide:) keyEquivalent:@"h"];
 	[appMenu addItem:NSMenuItem.separatorItem];
@@ -1189,7 +1269,11 @@ static void install_menus(void)
 	[winMenu addItemWithTitle:@"창 닫기" action:@selector(performClose:) keyEquivalent:@"w"];
 	[winMenu addItemWithTitle:@"최소화" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
 	winItem.submenu = winMenu;
+	[editMenu addItemWithTitle:@"복사" action:@selector(copy:) keyEquivalent:@"c"];
+	[editMenu addItemWithTitle:@"전체 선택" action:@selector(selectAll:) keyEquivalent:@"a"];
+	editItem.submenu = editMenu;
 	[bar addItem:appItem];
+	[bar addItem:editItem];
 	[bar addItem:winItem];
 	NSApp.mainMenu = bar;
 	NSApp.windowsMenu = winMenu;
