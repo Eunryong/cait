@@ -92,8 +92,6 @@ void act_update(const char *id, const char *tool, const char *target, int done, 
 	}
 }
 
-#define MAX_STAT 64
-
 void activity_label(const char *tool, const char *target, char *out, size_t size)
 {
 	const char *base = strrchr(target, '/');
@@ -344,9 +342,28 @@ int status_load(agent_info_t *st, int max)
 	return ns;
 }
 
+agent_info_t *status_load_all(int *n)
+{
+	int cap = 256, got;
+	agent_info_t *st = calloc((size_t)cap, sizeof(*st));
+
+	while (st) {
+		got = status_load(st, cap);
+		if (got < cap) {	/* it did not fill the array, so nothing was left out */
+			*n = got;
+			return st;
+		}
+		free(st);
+		cap *= 2;
+		st = calloc((size_t)cap, sizeof(*st));
+	}
+	*n = 0;
+	return NULL;
+}
+
 int cmd_status(int argc, char **argv)
 {
-	agent_info_t *st = calloc(MAX_STAT, sizeof(*st));
+	agent_info_t *st;
 	int ns, json = 0, all = 0, nh = 0;
 	time_t now = time(NULL);
 
@@ -356,9 +373,9 @@ int cmd_status(int argc, char **argv)
 		else if (strcmp(argv[i], "--all") == 0)
 			all = 1;
 	}
+	st = status_load_all(&ns);
 	if (!st)
 		return 1;
-	ns = status_load(st, MAX_STAT);
 	for (int i = 0; i < ns; i++) {
 		agent_info_t *a = &st[i];
 
@@ -413,14 +430,14 @@ int cmd_status(int argc, char **argv)
  */
 int forget_agents(const char *name, int *running)
 {
-	agent_info_t *st = calloc(MAX_STAT, sizeof(*st));
+	agent_info_t *st;
 	int ns, n = 0;
 
 	if (running)
 		*running = 0;
+	st = status_load_all(&ns);
 	if (!st)
 		return 0;
-	ns = status_load(st, MAX_STAT);
 	for (int i = 0; i < ns; i++) {
 		agent_info_t *a = &st[i];
 		int busy = strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0;
@@ -442,14 +459,16 @@ int forget_agents(const char *name, int *running)
 /* cait forget: clear finished agents from the lists. Their reports stay in the feed. */
 int ack_agent(const char *name)
 {
-	agent_info_t *st = calloc(MAX_STAT, sizeof(*st));
+	agent_info_t *st;
 	char path[4200], w[300];
 	int n, hit = 0;
 	FILE *f;
 
-	if (!st || ensure_dir() < 0)
+	if (ensure_dir() < 0)
 		return 0;
-	n = status_load(st, MAX_STAT);
+	st = status_load_all(&n);
+	if (!st)
+		return 0;
 	for (int i = 0; i < n; i++) {
 		if (strcmp(st[i].name, name) != 0 || !st[i].done)
 			continue;

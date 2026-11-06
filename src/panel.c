@@ -16,7 +16,6 @@
 
 #include "cait.h"
 
-#define MAX_AGENTS 64
 #define FILE_SEP '\x1f'
 
 static volatile sig_atomic_t quit;
@@ -43,32 +42,6 @@ static int agent_rank(const agent_info_t *a)
 	if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
 		return 2;
 	return 3;
-}
-
-/* status_load, minus the agents the user cleared, most urgent first */
-static int load_agents(agent_info_t *out)
-{
-	agent_info_t *all = calloc(MAX_AGENTS, sizeof(*all));
-	int n, k = 0;
-
-	g_npend = perm_load(g_pend, 8);
-	n = all ? status_load(all, MAX_AGENTS) : 0;
-	for (int i = 0; i < n; i++)
-		if (show_hidden || !all[i].hidden)
-			out[k++] = all[i];
-	free(all);
-	for (int i = 1; i < k; i++) {	/* stable insertion sort: rank, then most recently active */
-		agent_info_t t = out[i];
-		int j = i;
-
-		while (j > 0 && (agent_rank(&out[j - 1]) > agent_rank(&t) ||
-				 (agent_rank(&out[j - 1]) == agent_rank(&t) && out[j - 1].idle > t.idle))) {
-			out[j] = out[j - 1];
-			j--;
-		}
-		out[j] = t;
-	}
-	return k;
 }
 
 static void on_sig(int sig)
@@ -147,16 +120,47 @@ static int text_width(const char *s)
 
 /* ---- data ---- */
 
-typedef struct {
+typedef struct view_s view_t;
+struct view_s {
 	char *buf;
 	rec_t *recs;
 	size_t n;
-	agent_info_t agents[MAX_AGENTS];	/* from status_load: refreshed every second */
+	agent_info_t *agents;	/* from status_load_all: refreshed every second */
 	int nagents;
-	char stopped[MAX_AGENTS][128];
-	int nstopped;
+	char (*stopped)[128];
+	int nstopped, stopped_cap;
 	int stop_all;
-} view_t;
+};
+
+/* the order of the list: most urgent first, then the most recently active; ties keep the order they came in */
+static int by_urgency(const void *x, const void *y)
+{
+	const agent_info_t *a = x, *b = y;
+	int ra = agent_rank(a), rb = agent_rank(b);
+
+	if (ra != rb)
+		return ra < rb ? -1 : 1;
+	if (a->idle != b->idle)
+		return a->idle < b->idle ? -1 : 1;
+	return strcmp(a->id, b->id);
+}
+
+/* status_load_all, minus the agents the user cleared, most urgent first; replaces v->agents */
+static int load_agents(view_t *v)
+{
+	int n = 0, k = 0;
+	agent_info_t *all = status_load_all(&n);
+
+	g_npend = perm_load(g_pend, 8);
+	for (int i = 0; i < n; i++)
+		if (show_hidden || !all[i].hidden)
+			all[k++] = all[i];
+	qsort(all, (size_t)k, sizeof(*all), by_urgency);
+	free(v->agents);
+	v->agents = all;
+	return k;
+}
+
 
 static void view_free(view_t *v)
 {
@@ -227,15 +231,25 @@ static void view_load(view_t *v)
 				*why = '\0';
 			if (strcmp(who, "*") == 0)
 				v->stop_all = 1;
-			else if (v->nstopped < MAX_AGENTS)
+			else {
+				if (v->nstopped == v->stopped_cap) {
+					int cap = v->stopped_cap ? v->stopped_cap * 2 : 16;
+					void *grown = realloc(v->stopped, (size_t)cap * sizeof(*v->stopped));
+
+					if (!grown)
+						break;
+					v->stopped = grown;
+					v->stopped_cap = cap;
+				}
 				snprintf(v->stopped[v->nstopped++], 128, "%s", who);
+			}
 		}
 		if (!nl)
 			break;
 		p = nl + 1;
 	}
 	free(stops);
-	v->nagents = load_agents(v->agents);
+	v->nagents = load_agents(v);
 }
 
 static int is_stopped(const view_t *v, const char *name)
@@ -552,7 +566,7 @@ int cmd_panel(int argc, char **argv)
 		/* what agents are doing changes without touching the feed: re-read every second */
 		if (time(NULL) != agents_at) {
 			agents_at = time(NULL);
-			v.nagents = load_agents(v.agents);
+			v.nagents = load_agents(&v);
 			npending = perm_load(pending, 4);
 		}
 		sel = follow(&v, sel, &prev_sel, selname, sizeof(selname));
@@ -588,19 +602,19 @@ int cmd_panel(int argc, char **argv)
 
 				snprintf(msg, sizeof(msg), running ? "아직 실행 중이라 치울 수 없습니다" : "%d개 치움 (기록은 남음)", n);
 				msg_at = time(NULL);
-				v.nagents = load_agents(v.agents);
+				v.nagents = load_agents(&v);
 			} else if (c == 'a') {
 				if (v.nagents && ack_agent(v.agents[sel].name))
 					snprintf(msg, sizeof(msg), "%s 확인함", v.agents[sel].name);
 				else
 					snprintf(msg, sizeof(msg), "끝난 에이전트만 확인 처리할 수 있습니다");
 				msg_at = time(NULL);
-				v.nagents = load_agents(v.agents);
+				v.nagents = load_agents(&v);
 			} else if (c == 'h') {
 				show_hidden = !show_hidden;
 				snprintf(msg, sizeof(msg), show_hidden ? "치운 에이전트도 표시" : "치운 에이전트 숨김");
 				msg_at = time(NULL);
-				v.nagents = load_agents(v.agents);
+				v.nagents = load_agents(&v);
 			} else if (c == 's') {
 				if (v.nagents && v.agents[sel].reports == 0) {
 					snprintf(msg, sizeof(msg), "첫 보고 전이라 이름으로 중단할 수 없습니다");

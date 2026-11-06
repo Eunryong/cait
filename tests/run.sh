@@ -164,6 +164,14 @@ printf '{"tool_name":"Agent","tool_input":{"description":"fix the login check","
 hook idL Bash "$CAIT report --agent login-fix --file /x \\\"s\\\"" >/dev/null
 expect_has "brief pairs the task with the agent" "fix the login check" "$("$CAIT" brief --agent login-fix)"
 
+echo "many agents"
+for i in $(seq 1 300); do hook "scale$i" Read "" "$TMP/repo/a.txt" >/dev/null; done
+n=$("$CAIT" status --json | grep -c '"agent"')
+if [ "$n" -ge 300 ]; then ok "status lists every agent ($n), not just the first 64"; else bad "status lists every agent" "got $n, wanted at least 300"; fi
+"$CAIT" forget --done >/dev/null
+printf '{"agent_id":"scale7"}' | "$CAIT" check --done
+expect_has "an agent far down the list is still reachable" "scale7" "$("$CAIT" status | grep -o '^scale7')"
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

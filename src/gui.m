@@ -103,9 +103,9 @@ static NSString *friendly_tool(NSString *t)
 /* cait status, by agent name */
 static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSString *> *order)
 {
-	agent_info_t *st = calloc(64, sizeof(*st));
 	NSMutableDictionary *by = [NSMutableDictionary dictionary];
-	int n = st ? status_load(st, 64) : 0;
+	int n = 0;
+	agent_info_t *st = status_load_all(&n);
 
 	for (int i = 0; i < n; i++) {
 		NSString *name = [NSString stringWithUTF8String:st[i].name];

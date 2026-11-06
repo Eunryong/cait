@@ -41,6 +41,8 @@ typedef struct {
 	/* final_ok: the final report arrived, or the agent never reported or edited anything (nothing to wait for) */
 } agent_info_t;
 int status_load(agent_info_t *out, int max);
+/* every agent, however many: a malloc'd array (free it); *n is its length */
+agent_info_t *status_load_all(int *n);
 
 /* permission requests waiting for the user */
 typedef struct {
