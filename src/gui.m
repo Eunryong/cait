@@ -10,7 +10,9 @@
 #include "cait.h"
 
 @interface Report : NSObject
-@property NSString *rid, *agent, *status, *file, *counts, *text, *when, *mdPath;	/* mdPath: first document the preview can show (Markdown, Mermaid, image) */
+@property NSString *rid, *agent, *status, *file, *counts, *text, *when, *mdPath;
+@property NSArray<NSString *> *paths;
+@property NSInteger mdIndex;	/* mdPath: first document the preview can show (Markdown, Mermaid, image) */
 @end
 @implementation Report
 @end
@@ -163,6 +165,8 @@ static NSAttributedString *md_inline(NSString *src, NSFont *base, NSColor *color
 	return a;
 }
 
+static NSColor *md_mark;	/* set while the current source line is new or changed */
+
 static void md_add(NSMutableAttributedString *out, NSAttributedString *line, CGFloat indent, CGFloat hang, CGFloat after)
 {
 	NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
@@ -173,10 +177,73 @@ static void md_add(NSMutableAttributedString *out, NSAttributedString *line, CGF
 	ps.paragraphSpacing = after;
 	[m appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
 	[m addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, m.length)];
+	if (md_mark && line.length)
+		[m addAttribute:NSBackgroundColorAttributeName value:md_mark range:NSMakeRange(0, m.length - 1)];
 	[out appendAttributedString:m];
 }
 
-static NSAttributedString *render_markdown(NSString *md)
+/* Which lines of `after` are new or changed compared with `before` (0-based). Plain LCS on lines, no diff output. */
+static NSIndexSet *changed_lines(NSString *before, NSString *after)
+{
+	NSArray<NSString *> *a = [before componentsSeparatedByString:@"\n"], *b = [after componentsSeparatedByString:@"\n"];
+	NSMutableIndexSet *out = [NSMutableIndexSet indexSet];
+	NSMutableDictionary<NSString *, NSNumber *> *ids = [NSMutableDictionary dictionary];
+	NSUInteger lo = 0, ea = a.count, eb = b.count;
+	uint32_t *dp;
+	size_t w;
+
+	NSUInteger (^idOf)(NSString *) = ^NSUInteger(NSString *l) {
+		NSString *k = [l stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+		NSNumber *n = ids[k];
+
+		if (!n) {
+			n = @(ids.count);
+			ids[k] = n;
+		}
+		return n.unsignedIntegerValue;
+	};
+	NSUInteger *ia = calloc(a.count + 1, sizeof(NSUInteger)), *ib = calloc(b.count + 1, sizeof(NSUInteger));
+
+	for (NSUInteger i = 0; i < a.count; i++)
+		ia[i] = idOf(a[i]);
+	for (NSUInteger i = 0; i < b.count; i++)
+		ib[i] = idOf(b[i]);
+	while (lo < ea && lo < eb && ia[lo] == ib[lo])
+		lo++;
+	while (ea > lo && eb > lo && ia[ea - 1] == ib[eb - 1]) {
+		ea--;
+		eb--;
+	}
+	/* lo..ea of a and lo..eb of b are what differs; lines outside are unchanged */
+	if ((ea - lo) * (eb - lo) > 6000000) {	/* too big to compare: say nothing rather than colour everything */
+		free(ia);
+		free(ib);
+		return out;
+	}
+	w = eb - lo + 1;
+	dp = calloc((ea - lo + 1) * w, sizeof(uint32_t));
+	for (NSUInteger i = ea - lo; i-- > 0;)
+		for (NSUInteger j = eb - lo; j-- > 0;)
+			dp[i * w + j] = ia[lo + i] == ib[lo + j] ? dp[(i + 1) * w + j + 1] + 1
+								  : MAX(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+	for (NSUInteger i = 0, j = 0; j < eb - lo;) {
+		if (i < ea - lo && ia[lo + i] == ib[lo + j]) {
+			i++;
+			j++;
+		} else if (i < ea - lo && dp[(i + 1) * w + j] >= dp[i * w + j + 1]) {
+			i++;
+		} else {
+			[out addIndex:lo + j];
+			j++;
+		}
+	}
+	free(dp);
+	free(ia);
+	free(ib);
+	return out;
+}
+
+static NSAttributedString *render_markdown(NSString *md, NSIndexSet *changed)
 {
 	NSMutableAttributedString *out = [NSMutableAttributedString new];
 	NSFont *body = [NSFont systemFontOfSize:13];
@@ -185,6 +252,8 @@ static NSAttributedString *render_markdown(NSString *md)
 	NSRegularExpression *bullet = [NSRegularExpression regularExpressionWithPattern:@"^(\\s*)[-*+]\\s+(.*)$" options:0 error:nil];
 	NSRegularExpression *num = [NSRegularExpression regularExpressionWithPattern:@"^(\\s*)(\\d+[.)])\\s+(.*)$" options:0 error:nil];
 	BOOL code = NO;
+	NSUInteger lineno = (NSUInteger)-1;
+	NSColor *mark = [NSColor.systemGreenColor colorWithAlphaComponent:0.22];
 
 	for (NSString *raw in [md componentsSeparatedByString:@"\n"]) {
 		NSString *line = [raw stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\r"]];
@@ -192,6 +261,8 @@ static NSAttributedString *render_markdown(NSString *md)
 		NSTextCheckingResult *m;
 		NSRange all = NSMakeRange(0, line.length);
 
+		lineno++;
+		md_mark = [changed containsIndex:lineno] ? mark : nil;
 		if ([t hasPrefix:@"```"] || [t hasPrefix:@"~~~"]) {
 			code = !code;
 			continue;
@@ -249,6 +320,7 @@ static NSAttributedString *render_markdown(NSString *md)
 			md_add(out, md_inline(t, body, NSColor.labelColor), 0, 0, 4);
 		}
 	}
+	md_mark = nil;
 	return out;
 }
 
@@ -569,6 +641,31 @@ static NSString *web_page(NSString *md, NSString *title)
 		"</script>", title, lit];
 }
 
+/*
+ * What the file looked like before this report: the snapshot taken just before the agent's edits, else the
+ * version right after the previous report of the same file. nil when the file is new (nothing to compare).
+ */
+- (NSString *)textBefore:(Report *)r
+{
+	NSData *d = read_dir_file([[NSString stringWithFormat:@"snap/%@/%ld.before", r.rid, (long)r.mdIndex] UTF8String]);
+	NSUInteger at = [_all indexOfObject:r];
+
+	if (d)
+		return [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding];
+	if (read_dir_file([[NSString stringWithFormat:@"snap/%@/%ld.before.deleted", r.rid, (long)r.mdIndex] UTF8String]))
+		return nil;
+	for (NSUInteger q = at == NSNotFound ? 0 : at; q-- > 0;) {
+		Report *p = _all[q];
+		NSUInteger fi = [p.paths indexOfObject:r.mdPath];
+
+		if (fi == NSNotFound || [p.status isEqualToString:@"되돌림"])
+			continue;
+		d = read_dir_file([[NSString stringWithFormat:@"snap/%@/%lu", p.rid, (unsigned long)fi] UTF8String]);
+		return d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil;
+	}
+	return nil;
+}
+
 /* Show the selected report's document: Markdown as text, Mermaid and images in the web view. */
 - (void)updatePreview
 {
@@ -583,7 +680,7 @@ static NSString *web_page(NSString *md, NSString *title)
 		NSDictionary *at = [NSFileManager.defaultManager attributesOfItemAtPath:r.mdPath error:nil];
 
 		if (at && [at fileSize] < (image ? 20000000 : 600000)) {
-			key = [NSString stringWithFormat:@"%@:%@:%llu", r.mdPath, at.fileModificationDate, at.fileSize];
+			key = [NSString stringWithFormat:@"%@:%@:%@:%llu", r.rid, r.mdPath, at.fileModificationDate, at.fileSize];
 			show = YES;
 		}
 	}
@@ -603,10 +700,13 @@ static NSString *web_page(NSString *md, NSString *title)
 			[_web loadHTMLString:web_page(text, name) baseURL:nil];
 		} else {
 			NSMutableAttributedString *doc = [NSMutableAttributedString new];
+			NSString *before = [self textBefore:r];
+			NSIndexSet *changed = before && text ? changed_lines(before, text) : [NSIndexSet indexSet];
 
-			[doc appendAttributedString:[[NSAttributedString alloc] initWithString:[name stringByAppendingString:@"  ·  미리보기\n"]
+			[doc appendAttributedString:[[NSAttributedString alloc] initWithString:
+					[name stringByAppendingString:changed.count ? @"  ·  미리보기  ·  바뀐 부분은 초록색\n" : @"  ·  미리보기\n"]
 					attributes:@{ NSFontAttributeName : [NSFont systemFontOfSize:11], NSForegroundColorAttributeName : NSColor.secondaryLabelColor }]];
-			[doc appendAttributedString:render_markdown(text ?: @"(파일을 읽을 수 없습니다)")];
+			[doc appendAttributedString:render_markdown(text ?: @"(파일을 읽을 수 없습니다)", changed)];
 			[_previewText.textStorage setAttributedString:doc];
 			[_previewText scrollRangeToVisible:NSMakeRange(0, 0)];
 		}
@@ -756,12 +856,14 @@ static NSString *web_page(NSString *md, NSString *title)
 		for (NSUInteger i = 0; i < files.length; i++)
 			if ([files characterAtIndex:i] == 0x1f)
 				nf++;
-		for (NSString *one in [files componentsSeparatedByString:@"\x1f"]) {
+		rp.paths = [files componentsSeparatedByString:@"\x1f"];
+		for (NSString *one in rp.paths) {
 			NSString *ext = one.pathExtension.lowercaseString;
 
 			if ([@[ @"md", @"markdown", @"mmd", @"mermaid", @"png", @"jpg", @"jpeg", @"gif", @"svg", @"webp" ]
 				    containsObject:ext]) {
 				rp.mdPath = one;
+				rp.mdIndex = (NSInteger)[rp.paths indexOfObject:one];
 				break;
 			}
 		}
