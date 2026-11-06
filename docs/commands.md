@@ -15,6 +15,7 @@
 | `cait tell [--agent 이름] "요청"` / `cait inbox` | 화면, 메인 에이전트 | 사용자의 수정 요청을 메인 에이전트에게 보낸다 |
 | `cait brief [--agent 이름]` | 화면, 메인 에이전트 | 메인 에이전트가 그 서브에이전트에게 시킨 일을 보여 준다 |
 | `cait ack --agent 이름` | 사용자 | 끝난 에이전트를 "확인함"으로 표시한다 |
+| `cait gc [--dry-run]` / `show` / `set KEY DAYS\|off` | 사용자 | 오래된 스냅샷, 되돌리기 백업, 끝난 에이전트의 진행 기록, 시킨 일 기록을 정리한다. 기준(일)은 `set`으로 바꾸고 `off`면 계속 보관한다. 기록(`feed.tsv`)은 지우지 않는다. `--dry-run`은 지울 것만 보여 준다 |
 | `cait forget --agent 이름 \| --done \| --undo` | 사용자 | 끝난 에이전트를 목록에서 치우거나 되살린다. 기록은 남는다 |
 | `cait perm [--json]` / `allow ID` / `deny ID [사유]` | 화면, 사용자 | 에이전트의 승인 요청을 보거나 답한다 |
 | `cait guard [add 문구 \| mode on\|all\|off]` | 사용자 | 승인이 필요한 문구 목록과 승인 방식을 본다 |

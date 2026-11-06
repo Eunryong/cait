@@ -186,6 +186,37 @@ if [ "$n" -ge 300 ]; then ok "status lists every agent ($n), not just the first 
 printf '{"agent_id":"scale7"}' | "$CAIT" check --done
 expect_has "an agent far down the list is still reachable" "scale7" "$("$CAIT" status | grep -o '^scale7')"
 
+echo "gc"
+ago() { date -r $(( $(date +%s) - $1 * 86400 )) +%Y%m%d%H%M; }
+mkdir -p "$CAIT_DIR/snap/oldkey" "$CAIT_DIR/snap/newkey" "$CAIT_DIR/undo/oldundo" "$CAIT_DIR/act"
+echo old > "$CAIT_DIR/snap/oldkey/0"; echo new > "$CAIT_DIR/snap/newkey/0"; echo u > "$CAIT_DIR/undo/oldundo/0"
+touch -t "$(ago 40)" "$CAIT_DIR/snap/oldkey/0" "$CAIT_DIR/snap/oldkey"
+touch -t "$(ago 100)" "$CAIT_DIR/undo/oldundo/0" "$CAIT_DIR/undo/oldundo"
+old=$(( $(date +%s) - 20 * 86400 ))
+printf '%s\t%s\t2\t1\t0\t1\tRead\t/x\n' "$old" "$old" > "$CAIT_DIR/act/gcold"
+printf '%s\t%s\t2\t1\t0\t1\tRead\t/x\n' "$(date +%s)" "$(date +%s)" > "$CAIT_DIR/act/gcfresh"
+feed_before=$(wc -l < "$CAIT_DIR/feed.tsv")
+out=$("$CAIT" gc --dry-run)
+expect_has "dry run says what it would remove" "would remove" "$out"
+[ -e "$CAIT_DIR/snap/oldkey/0" ] && ok "dry run removes nothing" || bad "dry run removes nothing"
+"$CAIT" gc >/dev/null
+[ ! -e "$CAIT_DIR/snap/oldkey" ] && ok "a snapshot older than 30 days is removed" || bad "old snapshot removed"
+[ -e "$CAIT_DIR/snap/newkey/0" ] && ok "a recent snapshot stays" || bad "recent snapshot stays"
+[ ! -e "$CAIT_DIR/undo/oldundo" ] && ok "a backup older than 90 days is removed" || bad "old backup removed"
+[ ! -e "$CAIT_DIR/act/gcold" ] && ok "a finished agent's old record is removed" || bad "old act removed"
+[ -e "$CAIT_DIR/act/gcfresh" ] && ok "a recent agent's record stays" || bad "recent act stays"
+expect_lacks "the cleaned agent leaves the lists" "gcold" "$("$CAIT" status)"
+[ "$(wc -l < "$CAIT_DIR/feed.tsv")" = "$feed_before" ] && ok "the log is never touched" || bad "the log is never touched"
+mkdir -p "$CAIT_DIR/snap/keepme"; echo k > "$CAIT_DIR/snap/keepme/0"; touch -t "$(ago 40)" "$CAIT_DIR/snap/keepme/0" "$CAIT_DIR/snap/keepme"
+"$CAIT" gc set snap_days 100 >/dev/null; "$CAIT" gc >/dev/null
+[ -e "$CAIT_DIR/snap/keepme/0" ] && ok "a longer retention keeps it" || bad "longer retention keeps it"
+"$CAIT" gc set snap_days 10 >/dev/null; "$CAIT" gc >/dev/null
+[ ! -e "$CAIT_DIR/snap/keepme" ] && ok "a shorter retention removes it" || bad "shorter retention removes it"
+"$CAIT" gc set snap_days off >/dev/null
+mkdir -p "$CAIT_DIR/snap/offkey"; echo o > "$CAIT_DIR/snap/offkey/0"; touch -t "$(ago 900)" "$CAIT_DIR/snap/offkey/0" "$CAIT_DIR/snap/offkey"; "$CAIT" gc >/dev/null
+[ -e "$CAIT_DIR/snap/offkey/0" ] && ok "off keeps it forever" || bad "off keeps it forever"
+out=$("$CAIT" gc set bogus 3 2>&1); expect_code "an unknown setting is refused" 1 $?
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" -eq 0 ]

@@ -140,6 +140,7 @@ static int hidden_has(const char *name)
 	return hit;
 }
 
+void agent_hide(const char *name);
 static void hidden_add(const char *name)
 {
 	char path[CAIT_PATH], w[300];
@@ -524,4 +525,9 @@ int cmd_forget(int argc, char **argv)
 	}
 	printf("cleared %d agent%s from the lists (cait log still has every report)\n", n, n == 1 ? "" : "s");
 	return 0;
+}
+
+void agent_hide(const char *name)
+{
+	hidden_add(name);
 }

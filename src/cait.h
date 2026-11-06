@@ -61,6 +61,8 @@ int cmd_guard(int argc, char **argv);
 int cmd_forget(int argc, char **argv);
 int forget_agents(const char *name, int *running);
 int cmd_ack(int argc, char **argv);
+int cmd_gc(int argc, char **argv);
+void agent_hide(const char *name);
 int ack_agent(const char *name);
 
 #endif

@@ -55,6 +55,7 @@ cait는 보고를 파일(`feed.tsv`)에 쌓기만 합니다. 어떻게 보여 �
 | `snap/`, `undo/` | 되돌리기용 파일 보관과 백업 |
 | `act/`, `agents`, `brief/` | 에이전트별 진행 기록, id와 이름 짝, 시킨 일 |
 | `stop`, `inbox.tsv`, `perm/` | 중단 요청, 수정 요청, 승인 요청 |
+| `retention` | 정리 기준(일). `cait gc set`으로 바꾼다 |
 | `guard`, `guardmode`, `hidden`, `ack` | 승인 문구와 방식, 치운 에이전트, 확인한 에이전트 |
 
 ## 소스 구성
@@ -69,6 +70,7 @@ cait는 보고를 파일(`feed.tsv`)에 쌓기만 합니다. 어떻게 보여 �
 | `src/guard.c`, `src/perm.c` | 위험한 호출의 승인 문구와 승인 요청·응답 |
 | `src/revert.c` | 보고 id, 스냅샷, 되돌리기, `show` |
 | `src/stop.c`, `src/tell.c`, `src/agents.c` | 중단 요청, 사용자 요청 전달, 에이전트 신원과 시킨 일 |
+| `src/gc.c` | 오래된 스냅샷과 진행 기록 정리, 정리 기준(`retention`) |
 | `src/measure.c`, `src/util.c` | git 변경량 측정, 경로·JSON·파일 도구 |
 | `src/panel.c` | 터미널 전체 화면 |
 | `src/gui.m`, `src/gui_markdown.m` | 창, 마크다운 렌더링과 도면 페이지 (Objective-C) |
