@@ -1175,6 +1175,26 @@ static NSString *seen_key(Agent *a)
 
 @end
 
+/* A menu bar gives the window the usual shortcuts: Cmd+W closes it, Cmd+Q quits, Cmd+M minimizes. */
+static void install_menus(void)
+{
+	NSMenu *bar = [NSMenu new];
+	NSMenuItem *appItem = [NSMenuItem new], *winItem = [NSMenuItem new];
+	NSMenu *appMenu = [[NSMenu alloc] initWithTitle:@"cait"], *winMenu = [[NSMenu alloc] initWithTitle:@"창"];
+
+	[appMenu addItemWithTitle:@"cait 숨기기" action:@selector(hide:) keyEquivalent:@"h"];
+	[appMenu addItem:NSMenuItem.separatorItem];
+	[appMenu addItemWithTitle:@"cait 종료" action:@selector(terminate:) keyEquivalent:@"q"];
+	appItem.submenu = appMenu;
+	[winMenu addItemWithTitle:@"창 닫기" action:@selector(performClose:) keyEquivalent:@"w"];
+	[winMenu addItemWithTitle:@"최소화" action:@selector(performMiniaturize:) keyEquivalent:@"m"];
+	winItem.submenu = winMenu;
+	[bar addItem:appItem];
+	[bar addItem:winItem];
+	NSApp.mainMenu = bar;
+	NSApp.windowsMenu = winMenu;
+}
+
 int cmd_gui(int argc, char **argv)
 {
 	(void)argv;
@@ -1189,6 +1209,7 @@ int cmd_gui(int argc, char **argv)
 		[NSApplication sharedApplication];
 		[NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 		NSApp.delegate = app;
+		install_menus();
 		[NSApp activateIgnoringOtherApps:YES];
 		[NSApp run];
 	}
