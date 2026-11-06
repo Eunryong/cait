@@ -47,6 +47,13 @@ int copy_file(const char *from, const char *to);
 void put_json_string(FILE *o, const char *s, size_t len);
 const char *cait_invokes(const char *in, const char *sub);
 char *read_all(FILE *f, size_t max, int *over);
+
+/* a string -> (long, long) map; strmap_get returns 0 when the key is absent */
+typedef struct strmap strmap_t;
+strmap_t *strmap_new(void);
+void strmap_free(strmap_t *m);
+int strmap_put(strmap_t *m, const char *key, long a, long b);
+int strmap_get(const strmap_t *m, const char *key, long *a, long *b);
 char *json_text_alloc(const char *in, const char *key);
 
 /* a hook input larger than this is not parsed; a subagent call that big is refused */

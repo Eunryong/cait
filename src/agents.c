@@ -19,13 +19,43 @@ int report_agent(const char *in, char *out, size_t size)
 	return n > 0;
 }
 
+/* <dir>/names/<id> holds the name of one agent, so finding it never means reading a growing list. */
+static void name_file(char *out, size_t size, const char *id)
+{
+	char dir[CAIT_PATH], w[256];
+
+	snprintf(w, sizeof(w), "%s", id);
+	safe_name(w);
+	cait_dir(dir, sizeof(dir));
+	snprintf(out, size, "%s/names/%s", dir, w);
+}
+
 void agent_remember(const char *id, const char *name)
 {
-	char path[CAIT_PATH];
+	char path[CAIT_PATH], dir[CAIT_PATH], have[256] = "";
 	FILE *f;
 
 	if (ensure_dir() < 0)
 		return;
+	name_file(path, sizeof(path), id);
+	f = fopen(path, "r");
+	if (f) {
+		if (fgets(have, sizeof(have), f))
+			have[strcspn(have, "\n")] = '\0';
+		fclose(f);
+	}
+	if (strcmp(have, name) == 0)
+		return;	/* already known: the hook calls this on every report, so do not repeat it */
+	cait_dir(dir, sizeof(dir));
+	snprintf(path, sizeof(path), "%s/names", dir);
+	mkdir(path, 0755);
+	name_file(path, sizeof(path), id);
+	f = fopen(path, "w");
+	if (f) {
+		fprintf(f, "%s\n", name);
+		fclose(f);
+	}
+	/* the id -> name list is still kept: pre_take reads it the other way, from a name to its ids */
 	path_in_dir(path, sizeof(path), "agents");
 	f = fopen(path, "a");
 	if (f) {
@@ -36,15 +66,24 @@ void agent_remember(const char *id, const char *name)
 
 int agent_name_of(const char *id, char *name, size_t size)
 {
-	char path[CAIT_PATH], line[1024];
+	char path[CAIT_PATH], line[1024], dir[CAIT_PATH];
 	FILE *f;
 	int found = 0;
 
-	path_in_dir(path, sizeof(path), "agents");
+	name_file(path, sizeof(path), id);
 	f = fopen(path, "r");
-	if (!f)
-		return 0;
-	while (fgets(line, sizeof(line), f)) {
+	if (f) {	/* an empty file means: known to have no name yet */
+		if (fgets(line, sizeof(line), f)) {
+			line[strcspn(line, "\n")] = '\0';
+			snprintf(name, size, "%s", line);
+			found = *line != '\0';
+		}
+		fclose(f);
+		return found;
+	}
+	path_in_dir(path, sizeof(path), "agents");	/* records from before names/ existed */
+	f = fopen(path, "r");
+	while (f && fgets(line, sizeof(line), f)) {
 		char *tab = strchr(line, '\t');
 
 		if (!tab)
@@ -56,7 +95,18 @@ int agent_name_of(const char *id, char *name, size_t size)
 			found = 1;
 		}
 	}
-	fclose(f);
+	if (f)
+		fclose(f);
+	cait_dir(dir, sizeof(dir));
+	snprintf(path, sizeof(path), "%s/names", dir);
+	mkdir(path, 0755);
+	name_file(path, sizeof(path), id);	/* remember the answer, or that there is none */
+	f = fopen(path, "w");
+	if (f) {
+		if (found)
+			fprintf(f, "%s\n", name);
+		fclose(f);
+	}
 	return found;
 }
 

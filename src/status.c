@@ -186,37 +186,159 @@ static void hidden_remove(const char *name)
 	rename(tmp, path);
 }
 
-/* <dir>/ack: "name \t calls \t reports" for agents the user has looked at. It holds only while the agent
- * does nothing more; any new tool call or report makes the agent "needs a look" again. */
-static int ack_matches(const char *name, int calls, int reports)
-{
-	char path[CAIT_PATH], line[600], w[300];
-	FILE *f;
-	int hit = 0;
+/* ---- the feed summed per agent, read incrementally: only what was appended since the last call ---- */
 
-	snprintf(w, sizeof(w), "%s", name);
-	flatten(w);
-	path_in_dir(path, sizeof(path), "ack");
+typedef struct {
+	char name[128];
+	int reports, final, reverted, file_reports;
+	long last_report;
+	char text[512];
+} agg_t;
+
+static struct {
+	ino_t ino;
+	off_t off;
+	agg_t *v;
+	size_t n, cap;
+	strmap_t *idx;
+} fc;
+
+static void fc_reset(void)
+{
+	free(fc.v);
+	strmap_free(fc.idx);
+	memset(&fc, 0, sizeof(fc));
+}
+
+static agg_t *fc_agg(const char *name)
+{
+	long i;
+
+	if (!fc.idx && !(fc.idx = strmap_new()))
+		return NULL;
+	if (strmap_get(fc.idx, name, &i, NULL))
+		return &fc.v[i];
+	if (fc.n == fc.cap) {
+		size_t cap = fc.cap ? fc.cap * 2 : 64;
+		agg_t *grown = realloc(fc.v, cap * sizeof(*fc.v));
+
+		if (!grown)
+			return NULL;
+		fc.v = grown;
+		fc.cap = cap;
+	}
+	memset(&fc.v[fc.n], 0, sizeof(fc.v[0]));
+	snprintf(fc.v[fc.n].name, sizeof(fc.v[0].name), "%s", name);
+	strmap_put(fc.idx, name, (long)fc.n, 0);
+	return &fc.v[fc.n++];
+}
+
+/* Read the part of feed.tsv that is new since the last call. A rewritten or shorter file starts over. */
+static void feed_scan(void)
+{
+	char path[CAIT_PATH], *line = NULL;
+	size_t cap = 0;
+	ssize_t got;
+	struct stat sb;
+	FILE *f;
+
+	path_in_dir(path, sizeof(path), "feed.tsv");
+	if (stat(path, &sb) != 0) {
+		fc_reset();
+		return;
+	}
+	if (sb.st_ino != fc.ino || sb.st_size < fc.off) {
+		fc_reset();
+		fc.ino = sb.st_ino;
+	}
+	if (sb.st_size == fc.off)
+		return;
 	f = fopen(path, "r");
 	if (!f)
-		return 0;
-	while (fgets(line, sizeof(line), f)) {
+		return;
+	fseeko(f, fc.off, SEEK_SET);
+	while ((got = getline(&line, &cap, f)) > 0) {
+		rec_t r;
+		agg_t *g;
+
+		if (line[got - 1] != '\n')
+			break;	/* a report still being written: read it next time */
+		fc.off += got;
+		if (!parse_rec(line, &r) || !(g = fc_agg(r.agent)))
+			continue;
+		if (strcmp(r.status, "reverted") == 0) {
+			g->reverted++;
+			continue;
+		}
+		g->reports++;
+		if (strcmp(r.status, "final") == 0)
+			g->final = 1;
+		else
+			g->file_reports++;
+		g->last_report = (long)r.time;
+		snprintf(g->text, sizeof(g->text), "%s", r.text);
+	}
+	free(line);
+	fclose(f);
+}
+
+/* The lines of <dir>/<name> as a set; with by_agent, the agent column of "epoch<TAB>agent<TAB>reason" lines. */
+static strmap_t *load_name_set(const char *name, int by_agent)
+{
+	char path[CAIT_PATH], line[600];
+	strmap_t *m = strmap_new();
+	FILE *f;
+
+	path_in_dir(path, sizeof(path), name);
+	f = fopen(path, "r");
+	while (m && f && fgets(line, sizeof(line), f)) {
+		char *key = line, *tab;
+
+		line[strcspn(line, "\n")] = '\0';
+		if (by_agent) {
+			tab = strchr(line, '\t');
+			if (!tab)
+				continue;
+			key = tab + 1;
+			if ((tab = strchr(key, '\t')))
+				*tab = '\0';
+			else
+				continue;
+		}
+		strmap_put(m, key, 1, 0);
+	}
+	if (f)
+		fclose(f);
+	return m;
+}
+
+/* <dir>/ack: "name<TAB>calls<TAB>reports"; the last line for a name decides */
+static strmap_t *load_ack_map(void)
+{
+	char path[CAIT_PATH], line[600];
+	strmap_t *m = strmap_new();
+	FILE *f;
+
+	path_in_dir(path, sizeof(path), "ack");
+	f = fopen(path, "r");
+	while (m && f && fgets(line, sizeof(line), f)) {
 		char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
 
 		if (!t2)
 			continue;
 		*t1 = *t2 = '\0';
-		if (strcmp(line, w) == 0)
-			hit = atoi(t1 + 1) == calls && atoi(t2 + 1) == reports;
+		strmap_put(m, line, atol(t1 + 1), atol(t2 + 1));
 	}
-	fclose(f);
-	return hit;
+	if (f)
+		fclose(f);
+	return m;
 }
 
 /* Every agent cait knows of, with its state worked out; returns how many. */
 int status_load(agent_info_t *st, int max)
 {
 	int ns = 0;
+	strmap_t *byname, *hidden, *stopped, *acked;
 	char dir[CAIT_PATH], path[CAIT_PATH], line[2048];
 	struct dirent *e;
 	DIR *d;
@@ -265,44 +387,45 @@ int status_load(agent_info_t *st, int max)
 		closedir(d);
 
 	/* reports from the feed; agents with reports but no hook activity get a row too */
-	path_in_dir(path, sizeof(path), "feed.tsv");
-	f = fopen(path, "r");
-	while (f && fgets(line, sizeof(line), f)) {
-		rec_t r;
+	feed_scan();
+	byname = strmap_new();
+	hidden = load_name_set("hidden", 0);
+	stopped = load_name_set("stop", 1);
+	acked = load_ack_map();
+	for (int i = 0; byname && i < ns; i++)
+		strmap_put(byname, st[i].name, i, 0);
+	for (size_t k = 0; byname && k < fc.n; k++) {
+		agg_t *g = &fc.v[k];
 		agent_info_t *a = NULL;
+		long idx;
 
-		if (!parse_rec(line, &r))
-			continue;
-		for (int i = 0; i < ns; i++)
-			if (strcmp(st[i].name, r.agent) == 0)
-				a = &st[i];
-		if (strcmp(r.status, "reverted") == 0) {
-			/* an undo is not the agent's own report: count it, but it is not its last word */
-			if (a)
-				a->reverted++;
-			continue;
+		if (strmap_get(byname, g->name, &idx, NULL))
+			a = &st[idx];
+		if (!a) {
+			if (g->reports == 0 || ns >= max)
+				continue;
+			a = &st[ns];
+			snprintf(a->name, sizeof(a->name), "%s", g->name);
+			strmap_put(byname, a->name, ns, 0);
+			ns++;
 		}
-		if (!a && ns < max) {
-			a = &st[ns++];
-			snprintf(a->name, sizeof(a->name), "%s", r.agent);
-		}
-		if (!a)
-			continue;
-		a->reports++;
-		if (strcmp(r.status, "final") == 0)
+		a->reverted = g->reverted;
+		a->reports = g->reports;
+		a->file_reports = g->file_reports;
+		if (g->final)
 			a->final = 1;
-		else
-			a->file_reports++;
-		a->last_report = (long)r.time;
-		snprintf(a->text, sizeof(a->text), "%s", r.text);
+		if (g->reports) {
+			a->last_report = g->last_report;
+			snprintf(a->text, sizeof(a->text), "%s", g->text);
+		}
 	}
-	if (f)
-		fclose(f);
+	strmap_free(byname);
 
 	for (int i = 0; i < ns; i++) {
 		agent_info_t *a = &st[i];
-		char sname[256], reason[256];
+		char sname[256], flat[300];
 		FILE *b;
+		long calls, reports;
 
 		a->final_ok = a->final || (a->reports == 0 && a->unreported == 0);
 		a->idle = (long)now - (a->seen_act ? a->last : a->last_report);
@@ -317,7 +440,7 @@ int status_load(agent_info_t *st, int max)
 				a->task[strcspn(a->task, "\n")] = '\0';
 			fclose(b);
 		}
-		if (stop_requested("*", reason, sizeof(reason)) || stop_requested(a->name, reason, sizeof(reason)))
+		if (stopped && (strmap_get(stopped, "*", NULL, NULL) || strmap_get(stopped, a->name, NULL, NULL)))
 			snprintf(a->state, sizeof(a->state), "stopped");
 		else if (a->done)
 			snprintf(a->state, sizeof(a->state), "done");
@@ -327,19 +450,25 @@ int status_load(agent_info_t *st, int max)
 			snprintf(a->state, sizeof(a->state), "working");
 		else
 			snprintf(a->state, sizeof(a->state), "quiet");
-		if (a->done && ack_matches(a->name, a->calls, a->reports)) {
+		snprintf(flat, sizeof(flat), "%s", a->name);
+		flatten(flat);
+		if (a->done && acked && strmap_get(acked, flat, &calls, &reports) && calls == a->calls &&
+		    reports == a->reports) {
 			a->acked = 1;
 			a->unreported = 0;
 			a->final_ok = 1;
 		}
 		/* cleared from the list; an agent that is busy again comes back by itself */
-		if (hidden_has(a->name)) {
+		if (hidden && strmap_get(hidden, a->name, NULL, NULL)) {
 			if (strcmp(a->state, "working") == 0 || strcmp(a->state, "quiet") == 0)
 				hidden_remove(a->name);
 			else
 				a->hidden = 1;
 		}
 	}
+	strmap_free(hidden);
+	strmap_free(stopped);
+	strmap_free(acked);
 	return ns;
 }
 

@@ -324,3 +324,111 @@ char *json_text_alloc(const char *in, const char *key)
 	}
 	return out;
 }
+
+/* ---- a small string -> (long, long) map: open addressing, grows as needed ---- */
+
+struct strmap {
+	char **key;
+	long *a, *b;
+	size_t cap, used;
+};
+
+static size_t str_hash(const char *s)
+{
+	size_t h = 1469598103934665603ULL;
+
+	for (; *s; s++)
+		h = (h ^ (unsigned char)*s) * 1099511628211ULL;
+	return h;
+}
+
+strmap_t *strmap_new(void)
+{
+	strmap_t *m = calloc(1, sizeof(*m));
+
+	if (!m)
+		return NULL;
+	m->cap = 64;
+	m->key = calloc(m->cap, sizeof(*m->key));
+	m->a = calloc(m->cap, sizeof(*m->a));
+	m->b = calloc(m->cap, sizeof(*m->b));
+	if (!m->key || !m->a || !m->b) {
+		strmap_free(m);
+		return NULL;
+	}
+	return m;
+}
+
+void strmap_free(strmap_t *m)
+{
+	if (!m)
+		return;
+	for (size_t i = 0; i < m->cap && m->key; i++)
+		free(m->key[i]);
+	free(m->key);
+	free(m->a);
+	free(m->b);
+	free(m);
+}
+
+static size_t strmap_slot(const strmap_t *m, const char *k)
+{
+	size_t i = str_hash(k) & (m->cap - 1);
+
+	while (m->key[i] && strcmp(m->key[i], k) != 0)
+		i = (i + 1) & (m->cap - 1);
+	return i;
+}
+
+int strmap_get(const strmap_t *m, const char *k, long *a, long *b)
+{
+	size_t i = strmap_slot(m, k);
+
+	if (!m->key[i])
+		return 0;
+	if (a)
+		*a = m->a[i];
+	if (b)
+		*b = m->b[i];
+	return 1;
+}
+
+int strmap_put(strmap_t *m, const char *k, long a, long b)
+{
+	size_t i;
+
+	if ((m->used + 1) * 2 > m->cap) {	/* keep it at most half full */
+		strmap_t grown = { calloc(m->cap * 2, sizeof(*m->key)), calloc(m->cap * 2, sizeof(*m->a)),
+				   calloc(m->cap * 2, sizeof(*m->b)), m->cap * 2, 0 };
+
+		if (!grown.key || !grown.a || !grown.b) {
+			free(grown.key);
+			free(grown.a);
+			free(grown.b);
+			return -1;
+		}
+		for (size_t j = 0; j < m->cap; j++) {
+			if (!m->key[j])
+				continue;
+			i = strmap_slot(&grown, m->key[j]);
+			grown.key[i] = m->key[j];
+			grown.a[i] = m->a[j];
+			grown.b[i] = m->b[j];
+			grown.used++;
+		}
+		free(m->key);
+		free(m->a);
+		free(m->b);
+		*m = grown;
+	}
+	i = strmap_slot(m, k);
+	if (!m->key[i]) {
+		m->key[i] = strdup(k);
+		if (!m->key[i])
+			return -1;
+		m->used++;
+	}
+	m->a[i] = a;
+	m->b[i] = b;
+	return 0;
+}

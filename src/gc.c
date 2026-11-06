@@ -158,6 +158,8 @@ static void clean_agents(tally_t *t)
 			remove_tree(path, t);
 			snprintf(path, sizeof(path), "%s/pre/%s", dir, safe);
 			remove_tree(path, t);
+			snprintf(path, sizeof(path), "%s/names/%s", dir, safe);
+			remove_tree(path, t);
 		}
 		if (!t->dry)
 			agent_hide(a->name);

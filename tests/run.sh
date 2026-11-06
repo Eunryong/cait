@@ -3,6 +3,7 @@
 #   make test            # builds, then runs this
 #   CAIT=./cait tests/run.sh
 set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
 CAIT=${CAIT:-./cait}
 CAIT=$(cd "$(dirname "$CAIT")" && pwd)/$(basename "$CAIT")
 TMP=$(mktemp -d)
@@ -185,6 +186,16 @@ if [ "$n" -ge 300 ]; then ok "status lists every agent ($n), not just the first 
 "$CAIT" forget --done >/dev/null
 printf '{"agent_id":"scale7"}' | "$CAIT" check --done
 expect_has "an agent far down the list is still reachable" "scale7" "$("$CAIT" status | grep -o '^scale7')"
+
+echo "incremental feed reading (unit)"
+if cc -O2 -std=c11 -I"$ROOT/src" -o "$TMP/unit_status" "$ROOT/tests/unit_status.c" $(ls "$ROOT"/src/*.c | grep -v '/main.c$') 2>"$TMP/cc.err"; then
+  out=$(CAIT_DIR="$TMP/unit" "$TMP/unit_status"); code=$?
+  echo "$out" | sed 's/^  ok   /  ok   /'
+  pass=$((pass + $(echo "$out" | grep -c '^  ok'))); fail=$((fail + $(echo "$out" | grep -c '^  FAIL')))
+  [ "$code" = 0 ] || true
+else
+  bad "unit test builds" "$(head -3 "$TMP/cc.err")"
+fi
 
 echo "gc"
 ago() { date -r $(( $(date +%s) - $1 * 86400 )) +%Y%m%d%H%M; }
