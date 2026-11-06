@@ -1,21 +1,49 @@
 # cait
 
-서브에이전트가 일하는 동안 "무엇을 바꿨는지"를 사용자 화면에 바로 알려 주는 도구입니다. (cat + AI)
+서브에이전트가 한 일을 **검증**하도록 돕는 macOS용 도구입니다. (cat + AI)
 
-서브에이전트를 여러 개 돌리면 각자 무엇을 바꿨는지 알기 어렵습니다. cait는 서브에이전트가 `cait report`로 보낸 변경 요약을 창이나 터미널 화면에 쌓아 보여 주고, 그 화면에서 바로 **중지, 되돌리기, 수정 요청, 승인**을 할 수 있게 합니다. 파일을 많이 바꾸는 작업은 알림이 넘칠 수 있어서 **메인 에이전트가 보고 단위를 조절**합니다.
+![cait 창: 에이전트 목록과 보고, 아키텍처 도면 미리보기](docs/screenshot.png)
+
+## 왜 만들었나
+
+서브에이전트에게 일을 나눠 맡기면 빨라지지만, 사용자는 "무엇을 바꿨는지, 시킨 대로 했는지, 위험한 일은 하지 않았는지"를 확인하기 어렵습니다. 결과만 믿고 넘기거나, 로그를 일일이 열어 봐야 합니다.
+
+cait는 그 검증을 쉽게 만듭니다.
+
+- **무엇을 바꿨는지 바로 본다:** 서브에이전트가 파일을 고칠 때마다 쉬운 말로 된 요약이 화면에 올라옵니다. 변경량(+N −M)은 에이전트의 말이 아니라 cait가 git으로 직접 잽니다.
+- **빠진 것을 잡는다:** 끝났는데 완료 보고가 없거나, 마지막 보고 뒤에 몰래 고친 파일이 있으면 "확인 필요"로 표시합니다.
+- **문서와 도면을 읽는다:** 에이전트가 쓴 마크다운(바뀐 줄은 색으로 표시)과 Mermaid 아키텍처 도면을 그 자리에서 봅니다.
+- **그 자리에서 조치한다:** 이상하면 중지하고, 한 건씩 되돌리고, 메인 에이전트에게 수정이나 보고를 요청합니다. 위험한 명령(`rm -rf`, `git push` 등)은 사용자가 화면에서 허용해야 실행됩니다.
+
+파일을 많이 바꾸는 작업은 알림이 넘칠 수 있어서 **메인 에이전트가 보고 단위를 조절**합니다.
+
+## 지원 환경
+
+- **macOS 전용**입니다. 창(`cait gui`)이 Cocoa로 되어 있고, 터미널 화면(`cait panel`)과 명령도 macOS 기준으로 만들고 시험했습니다.
+- 서브에이전트 연동은 **Claude Code**의 스킬과 훅을 씁니다. 훅이 없어도 보고를 받고 보는 것은 됩니다.
+- 다이어그램을 그릴 때만 인터넷이 필요합니다.
 
 ## 빠른 시작
 
 ```bash
-make                 # cait 빌드 (macOS에서는 창 포함)
-./cait gui           # 창 띄우기 (macOS)
-./cait panel         # 같은 내용을 터미널 전체 화면으로
+git clone https://github.com/Eunryong/cait.git && cd cait
+make                 # 빌드
+make test            # 테스트 (선택)
+export CAIT="$PWD/cait"
+./cait gui           # 창 띄우기
 ```
 
-Claude Code에서 쓰려면 두 가지가 필요합니다.
+Claude Code에서 쓰려면 아래 둘을 연결합니다. 스킬과 훅은 모두 `${CAIT:-cait}`로 cait를 부르므로, **환경변수 `CAIT`에 실행 파일 경로를 주입**하면 어느 위치에 설치해도 됩니다.
 
-1. **스킬:** [cait-report](.claude/skills/cait-report/SKILL.md)(서브에이전트용), [cait-level](.claude/skills/cait-level/SKILL.md)(메인 에이전트용). 스킬 안의 `cait` 경로는 이 저장소 위치 기준이니 환경에 맞게 고치세요.
-2. **훅:** [.claude/settings.json](.claude/settings.json)이 `cait check`를 도구 호출 직전(`PreToolUse`), 허락 요청(`PermissionRequest`), 서브에이전트 종료(`SubagentStop`)에 연결합니다. 진행 상황, 되돌리기, 승인, 강제 중단은 이 훅이 있어야 동작합니다. 훅 없이도 보고를 받고 보는 것은 됩니다.
+1. **스킬:** [cait-report](.claude/skills/cait-report/SKILL.md)(서브에이전트용), [cait-level](.claude/skills/cait-level/SKILL.md)(메인 에이전트용)을 프로젝트나 `~/.claude/skills`에 둡니다.
+2. **훅:** [.claude/settings.json](.claude/settings.json)의 `hooks`를 설정에 합칩니다. 도구 호출 직전(`PreToolUse`), 허락 요청(`PermissionRequest`), 서브에이전트 종료(`SubagentStop`)에 `cait check`를 연결합니다. 진행 상황, 되돌리기, 승인, 강제 중단은 이 훅이 있어야 동작합니다.
+3. **경로 주입:** Claude Code 설정(`.claude/settings.local.json` 또는 `~/.claude/settings.json`)의 `env`에 넣거나 셸 프로필에서 내보냅니다.
+
+```json
+{ "env": { "CAIT": "/절대/경로/cait" } }
+```
+
+`cait`를 `PATH`에 두면 `CAIT` 없이도 됩니다.
 
 메인 에이전트는 `cait-level` 스킬로 보고 단위를 정하고, 서브에이전트를 띄울 때 `cait-report` 스킬을 쓰라고 지시합니다. 서브에이전트는 파일을 고칠 때마다 `cait report`를 부르고, 일을 끝내면 `--final`로 마무리합니다.
 
@@ -157,6 +185,25 @@ cait는 보고를 파일(`feed.tsv`)에 쌓기만 합니다. 어떻게 보여 �
 | `act/`, `agents`, `brief/` | 에이전트별 진행 기록, id와 이름 짝, 시킨 일 |
 | `stop`, `inbox.tsv`, `perm/` | 중단 요청, 수정 요청, 승인 요청 |
 | `guard`, `guardmode`, `hidden`, `ack` | 승인 문구와 방식, 치운 에이전트, 확인한 에이전트 |
+
+## 소스 구성
+
+| 파일 | 역할 |
+| --- | --- |
+| `src/main.c` | 명령 분배 |
+| `src/report.c` | `report`, `level` (서브에이전트가 피드에 쓰는 쪽) |
+| `src/watch.c` | `watch`, `log` (피드를 읽는 쪽) |
+| `src/status.c` | 에이전트별 진행 기록, `status`, `ack`, `forget` |
+| `src/check.c` | 훅 진입점 `check` (진행 기록, 중단, 가드, 요청 전달, 스냅샷) |
+| `src/guard.c`, `src/perm.c` | 위험한 호출의 승인 문구와 승인 요청·응답 |
+| `src/revert.c` | 보고 id, 스냅샷, 되돌리기 |
+| `src/stop.c`, `src/tell.c`, `src/agents.c` | 중단 요청, 사용자 요청 전달, 에이전트 신원과 시킨 일 |
+| `src/measure.c`, `src/util.c` | git 변경량 측정, 경로·JSON·파일 도구 |
+| `src/panel.c` | 터미널 전체 화면 |
+| `src/gui.m`, `src/gui_markdown.m` | 창, 마크다운 렌더링과 도면 페이지 (Objective-C) |
+| `tests/run.sh` | 실제 바이너리를 임시 폴더와 git 저장소에서 돌리는 테스트 |
+
+`make test`는 보고·로그·단계 조절·중단·되돌리기·완료 보고·확인·치우기·가드(허용/거부/시간 초과)·서브에이전트의 자기 승인 차단·요청 전달을 검사합니다. CI는 GitHub Actions(macOS)에서 같은 명령을 돌립니다. 창과 마크다운 미리보기는 자동 테스트 대상이 아닙니다.
 
 ## 왜 C인가
 - 여러 서브에이전트가 동시에 보고해도 줄 단위로 안전하게 쓰고(`flock`) 바로 확인할 수 있습니다.
