@@ -26,6 +26,7 @@ int stop_add(const char *agent, const char *reason);
 int cmd_gui(int argc, char **argv);
 void rec_key(time_t t, const char *agent, const char *files, char *out, size_t size);
 int cmd_revert(int argc, char **argv);
+int cmd_show(int argc, char **argv);
 int cmd_tell(int argc, char **argv);
 int cmd_inbox(int argc, char **argv);
 int cmd_brief(int argc, char **argv);

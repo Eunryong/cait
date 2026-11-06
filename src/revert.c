@@ -317,3 +317,82 @@ int cmd_revert(int argc, char **argv)
 	free(recs);
 	return bad ? 1 : 0;
 }
+
+/* cait show --id KEY: what one report changed, as a unified diff, without opening the files. */
+int cmd_show(int argc, char **argv)
+{
+	const char *id = argc >= 2 && strcmp(argv[0], "--id") == 0 ? argv[1] : NULL;
+	char path[4200], *line = NULL;
+	size_t len = 0;
+	FILE *f;
+	int found = 0;
+
+	if (!id) {
+		fprintf(stderr, "usage: cait show --id KEY   (KEY: see `cait log --json`)\n");
+		return 1;
+	}
+	path_in_dir(path, sizeof(path), "feed.tsv");
+	f = fopen(path, "r");
+	if (!f) {
+		fprintf(stderr, "cait: nothing has been reported yet\n");
+		return 1;
+	}
+	while (!found && getline(&line, &len, f) > 0) {
+		rec_t r;
+		char key[24], *copy = strdup(line);
+
+		if (!copy || !parse_rec(copy, &r)) {
+			free(copy);
+			continue;
+		}
+		rec_key(r.time, r.agent, r.files, key, sizeof(key));
+		if (strcmp(key, id) == 0) {
+			char files[8192], *p = files, *e;
+			int idx = 0;
+
+			found = 1;
+			printf("%s: %s\n", r.agent, r.text);
+			snprintf(files, sizeof(files), "%s", r.files);
+			for (;; idx++, p = e + 1) {
+				char before[4400], after[4400], mark[4400], out[65536];
+				char *argv_diff[] = { "diff", "-u", "-L", "before", "-L", "after", before, after, NULL };
+
+				e = strchr(p, FILE_SEP);
+				if (e)
+					*e = '\0';
+				if (*p) {
+					printf("\n== %s\n", p);
+					snap_path(before, sizeof(before), "snap", key, idx, ".before");
+					snap_path(mark, sizeof(mark), "snap", key, idx, ".before.deleted");
+					snap_path(after, sizeof(after), "snap", key, idx, "");
+					if (access(mark, F_OK) == 0)
+						printf("(new file)\n");
+					else if (access(before, F_OK) != 0 || access(after, F_OK) != 0) {
+						/* no hook snapshot (the agent edited some other way): compare with the last commit */
+						char dirp[4096], *b = strrchr(p, '/');
+						char *gd[] = { "git", "-C", dirp, "diff", "HEAD", "--", b ? b + 1 : p, NULL };
+
+						snprintf(dirp, sizeof(dirp), "%.*s", b ? (int)(b - p) : 1, b ? p : ".");
+						printf("(no before-snapshot; this is the file now against the last commit)\n");
+						run(gd, out, sizeof(out));
+						fputs(out, stdout);
+					}
+					else {
+						run(argv_diff, out, sizeof(out));
+						fputs(out, stdout);
+					}
+				}
+				if (!e)
+					break;
+			}
+		}
+		free(copy);
+	}
+	free(line);
+	fclose(f);
+	if (!found) {
+		fprintf(stderr, "cait: no report with that id\n");
+		return 1;
+	}
+	return 0;
+}

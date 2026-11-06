@@ -24,6 +24,8 @@ int main(int argc, char **argv)
 		return cmd_panel(argc - 2, argv + 2);
 	if (argc >= 2 && strcmp(argv[1], "revert") == 0)
 		return cmd_revert(argc - 2, argv + 2);
+	if (argc >= 2 && strcmp(argv[1], "show") == 0)
+		return cmd_show(argc - 2, argv + 2);
 	if (argc >= 2 && strcmp(argv[1], "tell") == 0)
 		return cmd_tell(argc - 2, argv + 2);
 	if (argc >= 2 && strcmp(argv[1], "inbox") == 0)
@@ -56,6 +58,7 @@ int main(int argc, char **argv)
 		"       cait panel                                                       (user; full-screen terminal view)\n"
 		"       cait stop [--agent NAME] [reason] | --clear                      (user, main agent)\n"
 		"       cait revert --id KEY [--dry-run]                                 (screens, main agent)\n"
+		"       cait show --id KEY                                               (what one report changed, as a diff)\n"
 		"       cait tell [--agent NAME] \"request\" | cait inbox                  (screens, main agent)\n"
 		"       cait status [--json]                                             (what every agent is doing now)\n"
 		"       cait brief [--agent NAME]                                        (what the main agent asked an agent)\n"
