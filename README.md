@@ -1,5 +1,7 @@
 # cait
 
+[![ci](https://github.com/Eunryong/cait/actions/workflows/ci.yml/badge.svg)](https://github.com/Eunryong/cait/actions/workflows/ci.yml)
+
 서브에이전트가 한 일을 **검증**하도록 돕는 macOS용 도구입니다. (cat + AI)
 
 ![cait 창: 에이전트 목록과 보고, 아키텍처 도면 미리보기](docs/screenshot.png)
