@@ -4,12 +4,13 @@
  * a correction. Only this window is Objective-C; the rest of cait is C.
  */
 #import <Cocoa/Cocoa.h>
+#import <WebKit/WebKit.h>
 #include <unistd.h>
 
 #include "cait.h"
 
 @interface Report : NSObject
-@property NSString *rid, *agent, *status, *file, *counts, *text, *when, *mdPath;	/* mdPath: first Markdown file of the report */
+@property NSString *rid, *agent, *status, *file, *counts, *text, *when, *mdPath;	/* mdPath: first document the preview can show (Markdown, Mermaid, image) */
 @end
 @implementation Report
 @end
@@ -47,9 +48,10 @@
 @property NSScrollView *agentScroll, *reportScroll;
 @property NSMutableDictionary *askedReport;
 @property NSScrollView *previewScroll;
+@property WKWebView *web;
 @property NSTextView *previewText;
 @property NSString *previewKey;
-@property BOOL permUp, previewShown;
+@property BOOL permUp, previewShown, previewWeb;	/* previewWeb: drawn by the web view (diagrams, images) */
 @property NSButton *askReportBtn, *ackBtn, *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
 @property NSTextField *emptyLabel, *noReports;
 @property NSMutableDictionary<NSString *, NSString *> *permInfo;	/* agent name -> its first waiting request */
@@ -329,6 +331,9 @@ static NSAttributedString *render_markdown(NSString *md)
 	_previewScroll.borderType = NSBezelBorder;
 	_previewScroll.hidden = YES;
 	[root addSubview:_previewScroll];
+	_web = [[WKWebView alloc] initWithFrame:NSZeroRect configuration:[WKWebViewConfiguration new]];
+	_web.hidden = YES;
+	[root addSubview:_web];
 
 	_emptyLabel = [NSTextField wrappingLabelWithString:@"아직 보이는 에이전트가 없습니다.\n\n메인 에이전트가 서브에이전트에게 일을 시키면 여기에 나타나고, 파일을 바꿀 때마다 쉬운 말로 요약이 올라옵니다."];
 	_emptyLabel.frame = NSMakeRect(28, 330, 256, 120);
@@ -525,7 +530,9 @@ static NSAttributedString *render_markdown(NSString *md)
 	_agentScroll.frame = NSMakeRect(12, 44, 300, top - 44);
 	_reportScroll.frame = NSMakeRect(320, 44 + ph + (ph ? 6 : 0), w - 332, room - ph - (ph ? 6 : 0));
 	_previewScroll.frame = NSMakeRect(320, 44, w - 332, ph);
-	_previewScroll.hidden = !_previewShown;
+	_web.frame = _previewScroll.frame;
+	_previewScroll.hidden = !_previewShown || _previewWeb;
+	_web.hidden = !_previewShown || !_previewWeb;
 }
 
 - (void)windowDidResize:(NSNotification *)n
@@ -533,36 +540,83 @@ static NSAttributedString *render_markdown(NSString *md)
 	[self layoutPanes];
 }
 
-/* Show the selected report's Markdown file as a rendered document. */
+/* Diagrams are drawn by Mermaid in the web view; with no network the source is shown instead. */
+static NSString *web_page(NSString *md, NSString *title)
+{
+	NSData *j = [NSJSONSerialization dataWithJSONObject:@[ md ?: @"" ] options:0 error:nil];
+	NSString *arr = j ? [[NSString alloc] initWithData:j encoding:NSUTF8StringEncoding] : @"[\"\"]";
+	NSString *lit = [[arr substringWithRange:NSMakeRange(1, arr.length - 2)] stringByReplacingOccurrencesOfString:@"</" withString:@"<\\/"];
+
+	return [NSString stringWithFormat:@"<!doctype html><meta charset=utf-8><style>"
+		":root{color-scheme:light dark}body{font:13px -apple-system,sans-serif;margin:14px 18px;line-height:1.55}"
+		"h1,h2,h3{margin:.9em 0 .4em}pre{background:rgba(128,128,128,.15);padding:8px 10px;border-radius:6px;overflow:auto}"
+		"code{background:rgba(128,128,128,.15);padding:1px 4px;border-radius:3px}pre code{background:none;padding:0}"
+		"blockquote{margin:0;padding-left:10px;border-left:3px solid #4a8af4;opacity:.85}"
+		"table{border-collapse:collapse}td,th{border:1px solid rgba(128,128,128,.4);padding:3px 8px}"
+		".mermaid{text-align:center;margin:12px 0}.note{opacity:.6;font-size:11px}.title{opacity:.6;font-size:11px}</style>"
+		"<div class=title>%@  ·  미리보기</div><div id=out></div>"
+		"<script src=\"https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js\"></script>"
+		"<script src=\"https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js\"></script>"
+		"<script>var src=%@;var out=document.getElementById('out');"
+		"function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;')}"
+		"if(typeof marked==='undefined'){out.innerHTML='<p class=note>다이어그램과 문서를 그리려면 인터넷 연결이 필요합니다. 원본을 보여 줍니다.</p><pre>'+esc(src)+'</pre>';}"
+		"else{out.innerHTML=marked.parse(src);"
+		"var blocks=out.querySelectorAll('pre code.language-mermaid');"
+		"if(typeof mermaid==='undefined'){if(blocks.length){var n=document.createElement('p');n.className='note';n.textContent='다이어그램을 그리려면 인터넷 연결이 필요합니다. 원본을 보여 줍니다.';out.prepend(n);}}"
+		"else{blocks.forEach(function(c){var d=document.createElement('div');d.className='mermaid';d.textContent=c.textContent;c.parentNode.replaceWith(d)});"
+		"mermaid.initialize({startOnLoad:false,theme:matchMedia('(prefers-color-scheme: dark)').matches?'dark':'default'});"
+		"mermaid.run({querySelector:'.mermaid'}).catch(function(e){var p=document.createElement('p');p.className='note';p.textContent='다이어그램 문법 오류: '+e;out.prepend(p)});}}"
+		"</script>", title, lit];
+}
+
+/* Show the selected report's document: Markdown as text, Mermaid and images in the web view. */
 - (void)updatePreview
 {
 	Report *r = [self selectedReport];
-	NSString *key = nil;
-	BOOL show = NO;
+	NSString *key = nil, *ext = r.mdPath.pathExtension.lowercaseString;
+	BOOL show = NO, web = NO;
+	BOOL image = [@[ @"png", @"jpg", @"jpeg", @"gif", @"svg", @"webp" ] containsObject:ext];
+	BOOL mmd = [ext isEqualToString:@"mmd"] || [ext isEqualToString:@"mermaid"];
+	NSString *text = nil;
 
 	if (r.mdPath.length) {
 		NSDictionary *at = [NSFileManager.defaultManager attributesOfItemAtPath:r.mdPath error:nil];
 
-		if (at && [at fileSize] < 600000) {
+		if (at && [at fileSize] < (image ? 20000000 : 600000)) {
 			key = [NSString stringWithFormat:@"%@:%@:%llu", r.mdPath, at.fileModificationDate, at.fileSize];
 			show = YES;
 		}
 	}
-	if (show && ![key isEqualToString:_previewKey]) {
-		NSString *text = [NSString stringWithContentsOfFile:r.mdPath encoding:NSUTF8StringEncoding error:nil];
-		NSMutableAttributedString *doc = [NSMutableAttributedString new];
+	if (show && !image) {
+		text = [NSString stringWithContentsOfFile:r.mdPath encoding:NSUTF8StringEncoding error:nil];
+		if (mmd)
+			text = [NSString stringWithFormat:@"```mermaid\n%@\n```\n", text ?: @""];
+		web = mmd || [text containsString:@"```mermaid"];
+	}
+	web = web || image;
+	if (show && (![key isEqualToString:_previewKey] || web != _previewWeb)) {
+		NSString *name = r.mdPath.lastPathComponent;
 
-		[doc appendAttributedString:[[NSAttributedString alloc] initWithString:[r.mdPath.lastPathComponent stringByAppendingString:@"  ·  미리보기\n"]
-				attributes:@{ NSFontAttributeName : [NSFont systemFontOfSize:11], NSForegroundColorAttributeName : NSColor.secondaryLabelColor }]];
-		[doc appendAttributedString:render_markdown(text ?: @"(파일을 읽을 수 없습니다)")];
-		[_previewText.textStorage setAttributedString:doc];
-		[_previewText scrollRangeToVisible:NSMakeRange(0, 0)];
+		if (image) {
+			[_web loadFileURL:[NSURL fileURLWithPath:r.mdPath] allowingReadAccessToURL:[NSURL fileURLWithPath:r.mdPath.stringByDeletingLastPathComponent]];
+		} else if (web) {
+			[_web loadHTMLString:web_page(text, name) baseURL:nil];
+		} else {
+			NSMutableAttributedString *doc = [NSMutableAttributedString new];
+
+			[doc appendAttributedString:[[NSAttributedString alloc] initWithString:[name stringByAppendingString:@"  ·  미리보기\n"]
+					attributes:@{ NSFontAttributeName : [NSFont systemFontOfSize:11], NSForegroundColorAttributeName : NSColor.secondaryLabelColor }]];
+			[doc appendAttributedString:render_markdown(text ?: @"(파일을 읽을 수 없습니다)")];
+			[_previewText.textStorage setAttributedString:doc];
+			[_previewText scrollRangeToVisible:NSMakeRange(0, 0)];
+		}
 		_previewKey = key;
 	}
 	if (!show)
 		_previewKey = nil;
-	if (show != _previewShown) {
+	if (show != _previewShown || web != _previewWeb) {
 		_previewShown = show;
+		_previewWeb = web;
 		[self layoutPanes];
 	}
 }
@@ -705,7 +759,8 @@ static NSAttributedString *render_markdown(NSString *md)
 		for (NSString *one in [files componentsSeparatedByString:@"\x1f"]) {
 			NSString *ext = one.pathExtension.lowercaseString;
 
-			if ([ext isEqualToString:@"md"] || [ext isEqualToString:@"markdown"]) {
+			if ([@[ @"md", @"markdown", @"mmd", @"mermaid", @"png", @"jpg", @"jpeg", @"gif", @"svg", @"webp" ]
+				    containsObject:ext]) {
 				rp.mdPath = one;
 				break;
 			}

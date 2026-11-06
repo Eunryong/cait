@@ -5,7 +5,7 @@ SRCS := $(filter-out src/gui_stub.c,$(wildcard src/*.c))
 
 ifeq ($(shell uname),Darwin)
 GUI := src/gui.m
-GUIFLAGS := -fobjc-arc -framework Cocoa
+GUIFLAGS := -fobjc-arc -framework Cocoa -framework WebKit
 else
 GUI := src/gui_stub.c
 GUIFLAGS :=
