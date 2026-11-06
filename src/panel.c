@@ -299,6 +299,8 @@ static const char *status_label(const char *status)
 		return "변경됨";
 	if (strcmp(status, "final") == 0)
 		return "완료 보고";
+	if (strcmp(status, "reverted") == 0)
+		return "되돌림";
 	return "변경됨";
 }
 
@@ -308,6 +310,31 @@ static void line_clipped(out_t *o, const char *s, int cols)
 	size_t n = fit(s, cols, NULL);
 
 	put(o, "%.*s\033[0m\033[K\r\n", (int)n, s);
+}
+
+/* Keep the selection on the same agent when the list is re-sorted under it. */
+static int follow(const view_t *v, int sel, int *prev, char *name, size_t size)
+{
+	int found = 0;
+
+	if (!v->nagents)
+		return 0;
+	if (sel >= v->nagents)
+		sel = v->nagents - 1;
+	if (sel != *prev || !*name) {	/* the user moved, or nothing is remembered yet */
+		snprintf(name, size, "%s", v->agents[sel].name);
+	} else {
+		for (int i = 0; i < v->nagents; i++)
+			if (strcmp(v->agents[i].name, name) == 0) {
+				sel = i;
+				found = 1;
+				break;
+			}
+		if (!found)
+			snprintf(name, size, "%s", v->agents[sel].name);
+	}
+	*prev = sel;
+	return sel;
 }
 
 static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
@@ -356,6 +383,10 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 		} else if (strcmp(a->state, "done") == 0) {
 			col = a->final_ok && !a->unreported ? "2" : "33";
 			label = a->unreported || !a->final_ok ? "확인 필요" : "완료";
+			if (a->reverted && a->final_ok && !a->unreported) {
+				label = a->reverted >= a->file_reports ? "전부 되돌림" : "일부 되돌림";
+				col = "2";
+			}
 		} else if (strcmp(a->state, "stopped") == 0 || is_stopped(v, a->name)) {
 			col = "31";
 			label = "중단됨";
@@ -454,7 +485,7 @@ static void draw(const view_t *v, int sel, const char *msg, const perm_t *ask)
 	put(&o, "\033[J");
 
 	put(&o, "\033[%d;1H\033[7m", rows);
-	snprintf(buf, sizeof(buf), " ↑↓ 선택  s 중단  c 해제  k 확인함  x 치우기  X 끝난 것 모두  h 치운 것 보기  q 종료   %s", msg);
+	snprintf(buf, sizeof(buf), " ↑↓ 선택  s 중단  c 해제  a 확인함  x 치우기  X 끝난 것 모두  h 치운 것 보기  q 종료   %s", msg);
 	{
 		size_t n = fit(buf, cols, &used);
 
@@ -469,7 +500,8 @@ int cmd_panel(int argc, char **argv)
 {
 	struct termios saved, raw;
 	view_t v = { 0 };
-	int sel = 0, dirty = 1;
+	int sel = 0, dirty = 1, prev_sel = -1;
+	char selname[128] = "";
 	char msg[256] = "";
 	time_t msg_at = 0;
 	struct stat prev_feed = { 0 }, prev_stop = { 0 };
@@ -517,14 +549,13 @@ int cmd_panel(int argc, char **argv)
 			view_load(&v);
 			dirty = 1;
 		}
-		if (sel >= v.nagents)
-			sel = v.nagents ? v.nagents - 1 : 0;
 		/* what agents are doing changes without touching the feed: re-read every second */
 		if (time(NULL) != agents_at) {
 			agents_at = time(NULL);
 			v.nagents = load_agents(v.agents);
 			npending = perm_load(pending, 4);
 		}
+		sel = follow(&v, sel, &prev_sel, selname, sizeof(selname));
 		/* redraw each tick: cheap, and it follows a resized window */
 		draw(&v, sel, msg, npending ? &pending[0] : NULL);
 		dirty = 0;
@@ -558,7 +589,7 @@ int cmd_panel(int argc, char **argv)
 				snprintf(msg, sizeof(msg), running ? "아직 실행 중이라 치울 수 없습니다" : "%d개 치움 (기록은 남음)", n);
 				msg_at = time(NULL);
 				v.nagents = load_agents(v.agents);
-			} else if (c == 'k') {
+			} else if (c == 'a') {
 				if (v.nagents && ack_agent(v.agents[sel].name))
 					snprintf(msg, sizeof(msg), "%s 확인함", v.agents[sel].name);
 				else

@@ -272,11 +272,17 @@ int status_load(agent_info_t *st, int max)
 		rec_t r;
 		agent_info_t *a = NULL;
 
-		if (!parse_rec(line, &r) || strcmp(r.status, "reverted") == 0)
+		if (!parse_rec(line, &r))
 			continue;
 		for (int i = 0; i < ns; i++)
 			if (strcmp(st[i].name, r.agent) == 0)
 				a = &st[i];
+		if (strcmp(r.status, "reverted") == 0) {
+			/* an undo is not the agent's own report: count it, but it is not its last word */
+			if (a)
+				a->reverted++;
+			continue;
+		}
 		if (!a && ns < max) {
 			a = &st[ns++];
 			snprintf(a->name, sizeof(a->name), "%s", r.agent);
@@ -286,6 +292,8 @@ int status_load(agent_info_t *st, int max)
 		a->reports++;
 		if (strcmp(r.status, "final") == 0)
 			a->final = 1;
+		else
+			a->file_reports++;
 		a->last_report = (long)r.time;
 		snprintf(a->text, sizeof(a->text), "%s", r.text);
 	}
