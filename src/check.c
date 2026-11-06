@@ -1,14 +1,12 @@
 /* the hook entry point (cait check): activity, stop, guard, inbox, snapshots */
 #include "internal.h"
 
-int cmd_check(int argc, char **argv)
+/* The hook input is parsed in full, however long: a guard that looked at a prefix could be padded past. */
+static int check_input(const char *in, int over, int argc, char **argv)
 {
-	char in[65536], id[128], name[256], reason[1024], tool[64];
-	size_t n;
+	char id[128], name[256], reason[1024], tool[64];
 	int hit;
 
-	n = fread(in, 1, sizeof(in) - 1, stdin);
-	in[n] = '\0';
 	tool[0] = '\0';
 	json_value(in, "tool_name", tool, sizeof(tool));
 	if (argc >= 1 && strcmp(argv[0], "--permission") == 0)
@@ -17,6 +15,14 @@ int cmd_check(int argc, char **argv)
 		/* SubagentStop: this agent has finished */
 		if (json_value(in, "agent_id", id, sizeof(id)))
 			act_update(id, NULL, NULL, 1, 0, 0);
+		return 0;
+	}
+	if (over) {
+		/* Too large to check in full. Never let a subagent through on a partial look; leave the main agent alone. */
+		if (json_value(in, "agent_id", id, sizeof(id))) {
+			fprintf(stderr, "cait: this tool call is too large for cait to check, so it was not allowed. Do not retry it; tell the main agent.\n");
+			return 2;
+		}
 		return 0;
 	}
 	if (!json_value(in, "agent_id", id, sizeof(id))) {
@@ -65,12 +71,17 @@ int cmd_check(int argc, char **argv)
 	if (!hit && agent_name_of(id, name, sizeof(name)))
 		hit = stop_requested(name, reason, sizeof(reason));
 	if (!hit) {
-		char fp[4096], what[1024] = "", pat[512], msg[1200];
+		char fp[CAIT_PATH], pat[512], msg[1200], *what;
 		const char *gw = getenv("CAIT_GUARD_WAIT");
 		int r;
 
-		if (!json_text(in, "command", what, sizeof(what)))
-			json_value(in, "file_path", what, sizeof(what));
+		what = json_text_alloc(in, "command");
+		if (!what)
+			what = json_text_alloc(in, "file_path");
+		if (!what)
+			what = strdup("");
+		if (!what)
+			return 2;
 		const char *gm = guard_mode();
 		int every = strcmp(gm, "all") == 0 &&
 			    (strcmp(tool, "Bash") == 0 || strcmp(tool, "Edit") == 0 || strcmp(tool, "Write") == 0 ||
@@ -86,9 +97,11 @@ int cmd_check(int argc, char **argv)
 				fprintf(stderr, r == 0 ? "cait: the user denied this on the cait screen%s%s. Do not retry it; tell the main agent what you could not do.\n"
 							: "cait: the user did not answer in time, so this was not allowed%s%s. Do not retry it; tell the main agent what you could not do.\n",
 					*msg ? ": " : "", msg);
+				free(what);
 				return 2;
 			}
 		}
+		free(what);
 		if ((strcmp(tool, "Edit") == 0 || strcmp(tool, "Write") == 0 ||
 		     strcmp(tool, "MultiEdit") == 0) && json_value(in, "file_path", fp, sizeof(fp)))
 			pre_save(id, fp);
@@ -98,4 +111,17 @@ int cmd_check(int argc, char **argv)
 		"Make no more edits; tell the main agent what is done and what is left.\n",
 		*reason ? ": " : "", reason);
 	return 2;
+}
+
+int cmd_check(int argc, char **argv)
+{
+	char *in;
+	int over, rc;
+
+	in = read_all(stdin, HOOK_INPUT_MAX, &over);
+	if (!in)
+		return 0;
+	rc = check_input(in, over, argc, argv);
+	free(in);
+	return rc;
 }

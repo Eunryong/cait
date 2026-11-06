@@ -7,7 +7,7 @@
 const char *guard_mode(void)
 {
 	static char m[16];
-	char path[4200];
+	char path[CAIT_PATH];
 	FILE *f;
 
 	snprintf(m, sizeof(m), "on");
@@ -62,7 +62,7 @@ const char *guard_reason(const char *pat)
 /* <dir>/guard: one substring per line. Absent: the defaults. */
 int guard_match(const char *detail, char *hit, size_t size)
 {
-	char path[4200], line[512];
+	char path[CAIT_PATH], line[512];
 	FILE *f;
 
 	path_in_dir(path, sizeof(path), "guard");
@@ -89,7 +89,7 @@ int guard_match(const char *detail, char *hit, size_t size)
 
 int cmd_guard(int argc, char **argv)
 {
-	char path[4200], line[512];
+	char path[CAIT_PATH], line[512];
 	FILE *f;
 
 	if (argc >= 1 && strcmp(argv[0], "mode") == 0) {

@@ -9,7 +9,7 @@
  */
 size_t inbox_take(char *out, size_t size, int mark)
 {
-	char path[4200], line[4096];
+	char path[CAIT_PATH], line[4096];
 	FILE *f;
 	long pos = 0;
 	size_t len = 0;
@@ -58,7 +58,7 @@ size_t inbox_take(char *out, size_t size, int mark)
 int cmd_tell(int argc, char **argv)
 {
 	const char *agent = "-";
-	char text[3000] = "", path[4200];
+	char text[3000] = "", path[CAIT_PATH];
 	size_t len = 0;
 	FILE *f;
 

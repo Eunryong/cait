@@ -12,6 +12,9 @@ int cmd_log(int argc, char **argv);
 #include <stdio.h>
 #include <time.h>
 
+/* A path buffer: the feed directory plus a file name and suffix. Long enough that no real path is cut. */
+#define CAIT_PATH 4400
+
 typedef struct {
 	time_t time;
 	const char *agent, *files, *status, *text;

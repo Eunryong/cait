@@ -22,7 +22,7 @@ void rec_key(time_t t, const char *agent, const char *files, char *out, size_t s
 /* Directory holding what one report's files looked like right after it. */
 static void snap_path(char *out, size_t size, const char *root, const char *key, int idx, const char *suffix)
 {
-	char dir[4096];
+	char dir[CAIT_PATH];
 
 	cait_dir(dir, sizeof(dir));
 	snprintf(out, size, "%s/%s/%s/%d%s", dir, root, key, idx, suffix);
@@ -35,7 +35,7 @@ static void snap_path(char *out, size_t size, const char *root, const char *key,
  */
 void pre_take(const char *agent, const char *file, const char *key, int idx)
 {
-	char path[4200], line[1024], from[4600], mk[4600], to[4400];
+	char path[CAIT_PATH], line[1024], from[CAIT_PATH], mk[CAIT_PATH], to[CAIT_PATH];
 	FILE *f;
 
 	path_in_dir(path, sizeof(path), "agents");
@@ -69,7 +69,7 @@ void pre_take(const char *agent, const char *file, const char *key, int idx)
 
 void snap_save(const char *key, int idx, const char *file)
 {
-	char dir[4096], root[4200], to[4400];
+	char dir[CAIT_PATH], root[CAIT_PATH], to[CAIT_PATH];
 	struct stat st;
 
 	cait_dir(dir, sizeof(dir));
@@ -92,7 +92,7 @@ void snap_save(const char *key, int idx, const char *file)
 
 int feed_append(const char *line, size_t n)
 {
-	char path[4200];
+	char path[CAIT_PATH];
 	int fd;
 	ssize_t w;
 
@@ -153,7 +153,7 @@ int cmd_revert(int argc, char **argv)
 	int dry = 0, bad = 0, target = -1;
 	frec_t *recs = NULL;
 	size_t n = 0, cap = 0, len = 0;
-	char path[4200], *line = NULL, dir[4096], files[8192];
+	char path[CAIT_PATH], *line = NULL, dir[CAIT_PATH], files[8192];
 	FILE *f;
 
 	for (int i = 0; i < argc; i++) {
@@ -214,7 +214,7 @@ int cmd_revert(int argc, char **argv)
 		int idx = 0;
 
 		for (;; idx++) {
-			char *e = strchr(p, FILE_SEP), what[256], backup[4400], root[4200], bs[4400], bm[4400];
+			char *e = strchr(p, FILE_SEP), what[256], backup[CAIT_PATH], root[CAIT_PATH], bs[CAIT_PATH], bm[CAIT_PATH];
 			int prev = -1, later = 0, prev_idx = -1, ok = 0;
 
 			file = p;
@@ -249,7 +249,7 @@ int cmd_revert(int argc, char **argv)
 				snprintf(what, sizeof(what), "restore the file as it was just before this report's edits");
 				ok = dry || copy_file(bs, file) == 0;
 			} else if (prev >= 0) {
-				char sp[4400], mark[4400];
+				char sp[CAIT_PATH], mark[CAIT_PATH];
 
 				snap_path(sp, sizeof(sp), "snap", recs[prev].key, prev_idx, "");
 				snap_path(mark, sizeof(mark), "snap", recs[prev].key, prev_idx, ".deleted");
@@ -322,7 +322,7 @@ int cmd_revert(int argc, char **argv)
 int cmd_show(int argc, char **argv)
 {
 	const char *id = argc >= 2 && strcmp(argv[0], "--id") == 0 ? argv[1] : NULL;
-	char path[4200], *line = NULL;
+	char path[CAIT_PATH], *line = NULL;
 	size_t len = 0;
 	FILE *f;
 	int found = 0;
@@ -354,7 +354,7 @@ int cmd_show(int argc, char **argv)
 			printf("%s: %s\n", r.agent, r.text);
 			snprintf(files, sizeof(files), "%s", r.files);
 			for (;; idx++, p = e + 1) {
-				char before[4400], after[4400], mark[4400], out[65536];
+				char before[CAIT_PATH], after[CAIT_PATH], mark[CAIT_PATH], out[65536];
 				char *argv_diff[] = { "diff", "-u", "-L", "before", "-L", "after", before, after, NULL };
 
 				e = strchr(p, FILE_SEP);
@@ -369,7 +369,7 @@ int cmd_show(int argc, char **argv)
 						printf("(new file)\n");
 					else if (access(before, F_OK) != 0 || access(after, F_OK) != 0) {
 						/* no hook snapshot (the agent edited some other way): compare with the last commit */
-						char dirp[4096], *b = strrchr(p, '/');
+						char dirp[CAIT_PATH], *b = strrchr(p, '/');
 						char *gd[] = { "git", "-C", dirp, "diff", "HEAD", "--", b ? b + 1 : p, NULL };
 
 						snprintf(dirp, sizeof(dirp), "%.*s", b ? (int)(b - p) : 1, b ? p : ".");

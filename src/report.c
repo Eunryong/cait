@@ -31,7 +31,7 @@ static const char *const level_help[] = {
 
 int read_level(void)
 {
-	char path[4200], word[32] = "";
+	char path[CAIT_PATH], word[32] = "";
 	FILE *f;
 
 	path_in_dir(path, sizeof(path), "level");
@@ -180,7 +180,7 @@ int cmd_report(int argc, char **argv)
 
 int cmd_level(int argc, char **argv)
 {
-	char path[4200];
+	char path[CAIT_PATH];
 	FILE *f;
 	int cur = read_level();
 

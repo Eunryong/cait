@@ -6,7 +6,7 @@
 /* <dir>/act/<agent id>: first \t last \t calls \t done \t unreported edits \t final report \t tool \t target */
 static void act_file(char *out, size_t size, const char *id)
 {
-	char dir[4096], w[256];
+	char dir[CAIT_PATH], w[256];
 
 	cait_dir(dir, sizeof(dir));
 	snprintf(w, sizeof(w), "%s", id);
@@ -40,7 +40,7 @@ static void act_split(char *line, char *p[ACT_FIELDS])
 void act_update(const char *id, const char *tool, const char *target, int done, int report,
 		       int final)
 {
-	char dir[4096], root[4200], path[4400], line[2048], t[128] = "", g[512] = "", *p[ACT_FIELDS];
+	char dir[CAIT_PATH], root[CAIT_PATH], path[CAIT_PATH], line[2048], t[128] = "", g[512] = "", *p[ACT_FIELDS];
 	long first = 0;
 	int calls = 0, was_done = 0, unrep = 0, fin = 0;
 	time_t now = time(NULL);
@@ -124,7 +124,7 @@ void activity_label(const char *tool, const char *target, char *out, size_t size
 /* <dir>/hidden: names of agents the user cleared from the lists. The feed itself is never touched. */
 static int hidden_has(const char *name)
 {
-	char path[4200], line[512];
+	char path[CAIT_PATH], line[512];
 	FILE *f;
 	int hit = 0;
 
@@ -142,7 +142,7 @@ static int hidden_has(const char *name)
 
 static void hidden_add(const char *name)
 {
-	char path[4200], w[300];
+	char path[CAIT_PATH], w[300];
 	FILE *f;
 
 	if (hidden_has(name) || ensure_dir() < 0)
@@ -159,7 +159,7 @@ static void hidden_add(const char *name)
 
 static void hidden_remove(const char *name)
 {
-	char path[4200], tmp[4300], line[512];
+	char path[CAIT_PATH], tmp[CAIT_PATH], line[512];
 	FILE *f, *o;
 
 	path_in_dir(path, sizeof(path), "hidden");
@@ -189,7 +189,7 @@ static void hidden_remove(const char *name)
  * does nothing more; any new tool call or report makes the agent "needs a look" again. */
 static int ack_matches(const char *name, int calls, int reports)
 {
-	char path[4200], line[600], w[300];
+	char path[CAIT_PATH], line[600], w[300];
 	FILE *f;
 	int hit = 0;
 
@@ -216,7 +216,7 @@ static int ack_matches(const char *name, int calls, int reports)
 int status_load(agent_info_t *st, int max)
 {
 	int ns = 0;
-	char dir[4096], path[4400], line[2048];
+	char dir[CAIT_PATH], path[CAIT_PATH], line[2048];
 	struct dirent *e;
 	DIR *d;
 	FILE *f;
@@ -460,7 +460,7 @@ int forget_agents(const char *name, int *running)
 int ack_agent(const char *name)
 {
 	agent_info_t *st;
-	char path[4200], w[300];
+	char path[CAIT_PATH], w[300];
 	int n, hit = 0;
 	FILE *f;
 
@@ -503,7 +503,7 @@ int cmd_ack(int argc, char **argv)
 int cmd_forget(int argc, char **argv)
 {
 	int n, running;
-	char path[4200];
+	char path[CAIT_PATH];
 
 	if (argc >= 1 && strcmp(argv[0], "--undo") == 0) {
 		path_in_dir(path, sizeof(path), "hidden");

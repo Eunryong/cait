@@ -10,7 +10,7 @@
 
 int stop_add(const char *agent, const char *reason)
 {
-	char path[4200], who[256], why[1024];
+	char path[CAIT_PATH], who[256], why[1024];
 	FILE *f;
 
 	if (ensure_dir() < 0)
@@ -31,7 +31,7 @@ int stop_add(const char *agent, const char *reason)
 /* Returns 1 and fills reason if a request names this agent or everyone. */
 int stop_requested(const char *agent, char *reason, size_t size)
 {
-	char path[4200], line[2048];
+	char path[CAIT_PATH], line[2048];
 	FILE *f;
 	int hit = 0;
 
@@ -63,7 +63,7 @@ int cmd_stop(int argc, char **argv)
 	const char *agent = "*";
 	char reason[1024] = "";
 	size_t len = 0;
-	char path[4200];
+	char path[CAIT_PATH];
 
 	for (int i = 0; i < argc; i++) {
 		if (strcmp(argv[i], "--clear") == 0) {

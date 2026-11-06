@@ -21,7 +21,7 @@ int report_agent(const char *in, char *out, size_t size)
 
 void agent_remember(const char *id, const char *name)
 {
-	char path[4200];
+	char path[CAIT_PATH];
 	FILE *f;
 
 	if (ensure_dir() < 0)
@@ -36,7 +36,7 @@ void agent_remember(const char *id, const char *name)
 
 int agent_name_of(const char *id, char *name, size_t size)
 {
-	char path[4200], line[1024];
+	char path[CAIT_PATH], line[1024];
 	FILE *f;
 	int found = 0;
 
@@ -62,7 +62,7 @@ int agent_name_of(const char *id, char *name, size_t size)
 
 void pre_path(char *out, size_t size, const char *who, const char *file, const char *suffix)
 {
-	char dir[4096], w[256];
+	char dir[CAIT_PATH], w[256];
 	unsigned long long h = 1469598103934665603ULL;
 
 	for (const char *p = file; *p; p++)
@@ -76,7 +76,7 @@ void pre_path(char *out, size_t size, const char *who, const char *file, const c
 /* Keep the file as it is now, unless an earlier edit since the last report already did. */
 void pre_save(const char *who, const char *file)
 {
-	char dir[4096], root[4200], w[256], p[4600], mk[4600];
+	char dir[CAIT_PATH], root[CAIT_PATH], w[256], p[CAIT_PATH], mk[CAIT_PATH];
 	struct stat st;
 
 	if (ensure_dir() < 0)
@@ -106,15 +106,18 @@ void pre_save(const char *who, const char *file)
 
 void brief_pending(const char *in)
 {
-	char desc[512] = "", prompt[3000], dir[4096], root[4200], path[4400];
+	char desc[512] = "", dir[CAIT_PATH], root[CAIT_PATH], path[CAIT_PATH];
+	char *prompt = json_text_alloc(in, "prompt");
 	FILE *f;
 
-	if (!json_text(in, "prompt", prompt, sizeof(prompt)))
+	if (!prompt)
 		return;
 	json_text(in, "description", desc, sizeof(desc));
 	flatten(desc);
-	if (ensure_dir() < 0)
+	if (ensure_dir() < 0) {
+		free(prompt);
 		return;
+	}
 	cait_dir(dir, sizeof(dir));
 	snprintf(root, sizeof(root), "%s/brief", dir);
 	mkdir_p2(root, "pending");
@@ -124,12 +127,13 @@ void brief_pending(const char *in)
 		fprintf(f, "%s\n%s\n", desc, prompt);
 		fclose(f);
 	}
+	free(prompt);
 }
 
 /* An agent just named itself: give it the pending brief that mentions that name, else the oldest. */
 void brief_claim(const char *name)
 {
-	char dir[4096], pdir[4300], safe[256], dst[4400], path[4400], oldest[256] = "";
+	char dir[CAIT_PATH], pdir[CAIT_PATH], safe[256], dst[CAIT_PATH], path[CAIT_PATH], oldest[256] = "";
 	struct dirent *e;
 	DIR *d;
 
@@ -142,8 +146,8 @@ void brief_claim(const char *name)
 	if (!d)
 		return;
 	while ((e = readdir(d))) {
-		char buf[3600];
-		size_t m;
+		char *buf;
+		int over;
 		FILE *f;
 
 		if (e->d_name[0] == '.')
@@ -154,14 +158,15 @@ void brief_claim(const char *name)
 		f = fopen(path, "r");
 		if (!f)
 			continue;
-		m = fread(buf, 1, sizeof(buf) - 1, f);
+		buf = read_all(f, HOOK_INPUT_MAX, &over);	/* the name may come late in a long prompt */
 		fclose(f);
-		buf[m] = '\0';
-		if (strstr(buf, name)) {
+		if (buf && strstr(buf, name)) {
+			free(buf);
 			rename(path, dst);
 			closedir(d);
 			return;
 		}
+		free(buf);
 	}
 	closedir(d);
 	if (*oldest && access(dst, F_OK) != 0) {
@@ -172,7 +177,7 @@ void brief_claim(const char *name)
 
 int cmd_brief(int argc, char **argv)
 {
-	char dir[4096], path[4400], line[4096];
+	char dir[CAIT_PATH], path[CAIT_PATH], line[4096];
 	const char *agent = NULL;
 	FILE *f;
 

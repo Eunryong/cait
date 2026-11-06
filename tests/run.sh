@@ -164,6 +164,20 @@ printf '{"tool_name":"Agent","tool_input":{"description":"fix the login check","
 hook idL Bash "$CAIT report --agent login-fix --file /x \\\"s\\\"" >/dev/null
 expect_has "brief pairs the task with the agent" "fix the login check" "$("$CAIT" brief --agent login-fix)"
 
+echo "large inputs"
+pad=$(printf '%*s' 3000 '')
+hook idPad Bash "echo ok;$pad rm -rf /tmp/zzz"; code=$?
+expect_code "a risky phrase after 3KB of padding is still caught" 2 "$code"
+big=$(head -c 200000 /dev/zero | tr '\0' 'x')
+printf '{"tool_name":"Agent","tool_input":{"description":"big job","prompt":"%s. Report as bigjob"}}' "$big" | "$CAIT" check
+hook idBig Bash "$CAIT report --agent bigjob --file /x \\\"s\\\"" >/dev/null
+expect_has "a 200KB prompt still pairs with the agent that is named late in it" "big job" "$("$CAIT" brief --agent bigjob)"
+huge=$(head -c 17000000 /dev/zero | tr '\0' 'y')
+printf '{"tool_name":"Bash","agent_id":"idHuge","tool_input":{"command":"%s"}}' "$huge" 2>/dev/null | "$CAIT" check 2>"$TMP/err"; code=$?
+expect_code "a subagent call over the input cap is refused, not half-checked" 2 "$code"
+printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$huge" 2>/dev/null | "$CAIT" check 2>/dev/null
+expect_code "the main agent is not blocked by the cap" 0 $?
+
 echo "many agents"
 for i in $(seq 1 300); do hook "scale$i" Read "" "$TMP/repo/a.txt" >/dev/null; done
 n=$("$CAIT" status --json | grep -c '"agent"')

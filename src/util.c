@@ -18,15 +18,16 @@ void cait_dir(char *out, size_t size)
 
 void path_in_dir(char *out, size_t size, const char *name)
 {
-	char dir[4096];
+	char dir[CAIT_PATH];
 
 	cait_dir(dir, sizeof(dir));
-	snprintf(out, size, "%s/%s", dir, name);
+	if (snprintf(out, size, "%s/%s", dir, name) >= (int)size)
+		out[0] = '\0';	/* too long for the caller's buffer: an empty path fails to open instead of opening a cut one */
 }
 
 int ensure_dir(void)
 {
-	char dir[4096];
+	char dir[CAIT_PATH];
 
 	cait_dir(dir, sizeof(dir));
 	return mkdir(dir, 0755) < 0 && errno != EEXIST ? -1 : 0;
@@ -183,7 +184,7 @@ void clip_utf8(char *s, size_t max)
 
 void mkdir_p2(const char *a, const char *b)
 {
-	char path[4200];
+	char path[CAIT_PATH];
 
 	snprintf(path, sizeof(path), "%s", a);
 	mkdir(path, 0755);
@@ -250,4 +251,76 @@ const char *cait_invokes(const char *in, const char *sub)
 			return q;
 	}
 	return NULL;
+}
+
+/*
+ * Read a whole stream into a malloc'd, NUL-terminated buffer that grows as needed, up to max bytes.
+ * *over is set when the stream was longer than max; what was read so far is still returned.
+ */
+char *read_all(FILE *f, size_t max, int *over)
+{
+	size_t cap = 8192, len = 0, n;
+	char *buf = malloc(cap + 1);
+
+	*over = 0;
+	if (!buf)
+		return NULL;
+	while ((n = fread(buf + len, 1, cap - len, f)) > 0) {
+		len += n;
+		if (len == cap) {
+			char *bigger;
+
+			if (cap >= max) {
+				char probe;
+
+				if (fread(&probe, 1, 1, f) == 1)
+					*over = 1;
+				break;
+			}
+			cap = cap * 2 > max ? max : cap * 2;
+			bigger = realloc(buf, cap + 1);
+			if (!bigger) {
+				free(buf);
+				return NULL;
+			}
+			buf = bigger;
+		}
+	}
+	buf[len] = '\0';
+	return buf;
+}
+
+/* Like json_text, but the whole value, however long: a malloc'd string, or NULL when absent or empty. */
+char *json_text_alloc(const char *in, const char *key)
+{
+	char pat[64], *out;
+	const char *p;
+	size_t n = 0;
+
+	snprintf(pat, sizeof(pat), "\"%s\"", key);
+	p = strstr(in, pat);
+	if (!p)
+		return NULL;
+	p = strchr(p + strlen(pat), ':');
+	while (p && *++p == ' ')
+		;
+	if (!p || *p != '"')
+		return NULL;
+	out = malloc(strlen(p) + 1);	/* the decoded value is never longer than the text after it */
+	if (!out)
+		return NULL;
+	for (p++; *p && *p != '"'; p++) {
+		if (*p == '\\' && p[1]) {
+			p++;
+			out[n++] = *p == 'n' ? '\n' : *p == 't' ? ' ' : *p;
+		} else {
+			out[n++] = *p;
+		}
+	}
+	out[n] = '\0';
+	if (n == 0) {
+		free(out);
+		return NULL;
+	}
+	return out;
 }

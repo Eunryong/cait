@@ -107,7 +107,7 @@ static const char *agent_color(const char *agent)
 
 static void show_rec(const rec_t *r, int color, int do_notify)
 {
-	char cwd[4096] = "", hms[16], title[512];
+	char cwd[CAIT_PATH] = "", hms[16], title[512];
 	struct tm tm;
 	const char *dim = color ? "\033[2m" : "", *reset = color ? "\033[0m" : "";
 	const char *green = color ? "\033[32m" : "", *red = color ? "\033[31m" : "";
@@ -177,7 +177,7 @@ int cmd_watch(int argc, char **argv)
 	int keys = 0;
 	char last_agent[256] = "";
 	int do_notify = 0, once = 0, color = isatty(STDOUT_FILENO);
-	char path[4200], *line = NULL;
+	char path[CAIT_PATH], *line = NULL;
 	size_t cap = 0;
 	long total = 0, skip;
 	FILE *f;
@@ -317,7 +317,7 @@ int cmd_log(int argc, char **argv)
 {
 	int json = 0, last = 20;
 	const char *only = NULL;
-	char path[4200], *line = NULL, **keep = NULL;
+	char path[CAIT_PATH], *line = NULL, **keep = NULL;
 	size_t cap = 0, nkeep = 0, kcap = 0;
 	FILE *f;
 

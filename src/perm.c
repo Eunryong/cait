@@ -7,7 +7,7 @@
  * <dir>/perm/<id>.ans: allow|deny [\t message] */
 static void perm_dir(char *out, size_t size)
 {
-	char dir[4096];
+	char dir[CAIT_PATH];
 
 	cait_dir(dir, sizeof(dir));
 	snprintf(out, size, "%s/perm", dir);
@@ -15,7 +15,7 @@ static void perm_dir(char *out, size_t size)
 
 int perm_load(perm_t *out, int max)
 {
-	char root[4200], path[4500], line[2048];
+	char root[CAIT_PATH], path[4500], line[2048];
 	struct dirent *e;
 	DIR *d;
 	int n = 0;
@@ -70,7 +70,7 @@ int perm_load(perm_t *out, int max)
 
 int perm_answer(const char *id, int allow, const char *msg)
 {
-	char root[4200], path[4600], w[128];
+	char root[CAIT_PATH], path[CAIT_PATH], w[128];
 	FILE *f;
 
 	snprintf(w, sizeof(w), "%s", id);
@@ -141,7 +141,7 @@ int cmd_perm(int argc, char **argv)
 int perm_ask(const char *in, const char *id, const char *tool, const char *detail, const char *why_asked,
 		    int wait_s, char *msg, size_t msize)
 {
-	char name[256] = "", root[4200], path[4600], rid[64], t[64], d[1024], y[256], ans[1200];
+	char name[256] = "", root[CAIT_PATH], path[CAIT_PATH], rid[64], t[64], d[1024], y[256], ans[1200];
 	FILE *f;
 
 	msg[0] = '\0';

@@ -46,6 +46,11 @@ void mkdir_p2(const char *a, const char *b);
 int copy_file(const char *from, const char *to);
 void put_json_string(FILE *o, const char *s, size_t len);
 const char *cait_invokes(const char *in, const char *sub);
+char *read_all(FILE *f, size_t max, int *over);
+char *json_text_alloc(const char *in, const char *key);
+
+/* a hook input larger than this is not parsed; a subagent call that big is refused */
+#define HOOK_INPUT_MAX ((size_t)16 << 20)
 
 /* measure.c */
 void measure_change(const char *file, change_t *c);

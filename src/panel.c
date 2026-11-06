@@ -171,7 +171,7 @@ static void view_free(view_t *v)
 
 static char *slurp(const char *name)
 {
-	char path[4200], *b;
+	char path[CAIT_PATH], *b;
 	FILE *f;
 	long n;
 
@@ -547,7 +547,7 @@ int cmd_panel(int argc, char **argv)
 	while (!quit) {
 		struct pollfd p = { STDIN_FILENO, POLLIN, 0 };
 		struct stat now_feed = { 0 }, now_stop = { 0 };
-		char path[4200], c;
+		char path[CAIT_PATH], c;
 
 		path_in_dir(path, sizeof(path), "feed.tsv");
 		stat(path, &now_feed);
