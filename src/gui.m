@@ -9,7 +9,7 @@
 #include "cait.h"
 
 @interface Report : NSObject
-@property NSString *rid, *agent, *status, *file, *counts, *text, *when;
+@property NSString *rid, *agent, *status, *file, *counts, *text, *when, *mdPath;	/* mdPath: first Markdown file of the report */
 @end
 @implementation Report
 @end
@@ -46,6 +46,10 @@
 @property NSPopUpButton *guardMenu;
 @property NSScrollView *agentScroll, *reportScroll;
 @property NSMutableDictionary *askedReport;
+@property NSScrollView *previewScroll;
+@property NSTextView *previewText;
+@property NSString *previewKey;
+@property BOOL permUp, previewShown;
 @property NSButton *askReportBtn, *ackBtn, *stopBtn, *undoBtn, *forgetBtn, *forgetAllBtn, *fixBtn;
 @property NSTextField *emptyLabel, *noReports;
 @property NSMutableDictionary<NSString *, NSString *> *permInfo;	/* agent name -> its first waiting request */
@@ -115,6 +119,135 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	}
 	free(st);
 	return by;
+}
+
+
+/* ---- Markdown preview: a small renderer so a changed .md file can be read as a document ---- */
+
+static NSAttributedString *md_inline(NSString *src, NSFont *base, NSColor *color)
+{
+	NSAttributedStringMarkdownParsingOptions *o = [NSAttributedStringMarkdownParsingOptions new];
+	NSMutableAttributedString *a;
+	NSFontManager *fm = NSFontManager.sharedFontManager;
+	NSError *err = nil;
+
+	o.interpretedSyntax = NSAttributedStringMarkdownInterpretedSyntaxInlineOnlyPreservingWhitespace;
+	a = [[NSMutableAttributedString alloc] initWithMarkdownString:src options:o baseURL:nil error:&err] ?
+		    : [[NSMutableAttributedString alloc] initWithString:src];
+	[a addAttribute:NSFontAttributeName value:base range:NSMakeRange(0, a.length)];
+	[a addAttribute:NSForegroundColorAttributeName value:color range:NSMakeRange(0, a.length)];
+	[a enumerateAttribute:NSInlinePresentationIntentAttributeName
+		      inRange:NSMakeRange(0, a.length)
+		      options:0
+		   usingBlock:^(id v, NSRange r, BOOL *stop) {
+			   (void)stop;
+			   NSUInteger i = [v unsignedIntegerValue];
+			   NSFont *f = base;
+
+			   if (!v)
+				   return;
+			   if (i & NSInlinePresentationIntentStronglyEmphasized)
+				   f = [fm convertFont:f toHaveTrait:NSBoldFontMask];
+			   if (i & NSInlinePresentationIntentEmphasized)
+				   f = [fm convertFont:f toHaveTrait:NSItalicFontMask];
+			   if (i & NSInlinePresentationIntentCode) {
+				   f = [NSFont monospacedSystemFontOfSize:base.pointSize - 1 weight:NSFontWeightRegular];
+				   [a addAttribute:NSBackgroundColorAttributeName value:NSColor.quaternaryLabelColor range:r];
+			   }
+			   if (i & NSInlinePresentationIntentStrikethrough)
+				   [a addAttribute:NSStrikethroughStyleAttributeName value:@(NSUnderlineStyleSingle) range:r];
+			   [a addAttribute:NSFontAttributeName value:f range:r];
+		   }];
+	return a;
+}
+
+static void md_add(NSMutableAttributedString *out, NSAttributedString *line, CGFloat indent, CGFloat hang, CGFloat after)
+{
+	NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
+	NSMutableAttributedString *m = [line mutableCopy];
+
+	ps.firstLineHeadIndent = indent;
+	ps.headIndent = indent + hang;
+	ps.paragraphSpacing = after;
+	[m appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
+	[m addAttribute:NSParagraphStyleAttributeName value:ps range:NSMakeRange(0, m.length)];
+	[out appendAttributedString:m];
+}
+
+static NSAttributedString *render_markdown(NSString *md)
+{
+	NSMutableAttributedString *out = [NSMutableAttributedString new];
+	NSFont *body = [NSFont systemFontOfSize:13];
+	NSFont *mono = [NSFont monospacedSystemFontOfSize:12 weight:NSFontWeightRegular];
+	NSRegularExpression *head = [NSRegularExpression regularExpressionWithPattern:@"^(#{1,6})\\s+(.*)$" options:0 error:nil];
+	NSRegularExpression *bullet = [NSRegularExpression regularExpressionWithPattern:@"^(\\s*)[-*+]\\s+(.*)$" options:0 error:nil];
+	NSRegularExpression *num = [NSRegularExpression regularExpressionWithPattern:@"^(\\s*)(\\d+[.)])\\s+(.*)$" options:0 error:nil];
+	BOOL code = NO;
+
+	for (NSString *raw in [md componentsSeparatedByString:@"\n"]) {
+		NSString *line = [raw stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\r"]];
+		NSString *t = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+		NSTextCheckingResult *m;
+		NSRange all = NSMakeRange(0, line.length);
+
+		if ([t hasPrefix:@"```"] || [t hasPrefix:@"~~~"]) {
+			code = !code;
+			continue;
+		}
+		if (code) {
+			NSMutableAttributedString *c = [[NSMutableAttributedString alloc] initWithString:line.length ? line : @" "
+					attributes:@{ NSFontAttributeName : mono, NSForegroundColorAttributeName : NSColor.labelColor,
+						      NSBackgroundColorAttributeName : NSColor.quaternaryLabelColor }];
+
+			md_add(out, c, 8, 0, 0);
+			continue;
+		}
+		if (t.length == 0) {
+			md_add(out, [[NSAttributedString alloc] initWithString:@"" attributes:@{ NSFontAttributeName : [NSFont systemFontOfSize:5] }], 0, 0, 0);
+			continue;
+		}
+		if ((m = [head firstMatchInString:line options:0 range:all])) {
+			NSUInteger lv = [m rangeAtIndex:1].length;
+			CGFloat size = lv == 1 ? 22 : lv == 2 ? 18 : lv == 3 ? 15 : 13;
+
+			md_add(out, md_inline([line substringWithRange:[m rangeAtIndex:2]], [NSFont boldSystemFontOfSize:size], NSColor.labelColor),
+			       0, 0, lv <= 2 ? 6 : 2);
+		} else if ([t isEqualToString:@"---"] || [t isEqualToString:@"***"] || [t isEqualToString:@"___"]) {
+			md_add(out, [[NSAttributedString alloc] initWithString:@"────────────────────────────────"
+					attributes:@{ NSFontAttributeName : body, NSForegroundColorAttributeName : NSColor.tertiaryLabelColor }], 0, 0, 4);
+		} else if ((m = [bullet firstMatchInString:line options:0 range:all])) {
+			CGFloat ind = 6 + [m rangeAtIndex:1].length * 8;
+			NSMutableAttributedString *l = [[NSMutableAttributedString alloc] initWithString:@"•  " attributes:@{ NSFontAttributeName : body }];
+
+			[l appendAttributedString:md_inline([line substringWithRange:[m rangeAtIndex:2]], body, NSColor.labelColor)];
+			md_add(out, l, ind, 14, 1);
+		} else if ((m = [num firstMatchInString:line options:0 range:all])) {
+			CGFloat ind = 6 + [m rangeAtIndex:1].length * 8;
+			NSMutableAttributedString *l = [[NSMutableAttributedString alloc]
+				initWithString:[[line substringWithRange:[m rangeAtIndex:2]] stringByAppendingString:@"  "]
+				    attributes:@{ NSFontAttributeName : body }];
+
+			[l appendAttributedString:md_inline([line substringWithRange:[m rangeAtIndex:3]], body, NSColor.labelColor)];
+			md_add(out, l, ind, 18, 1);
+		} else if ([t hasPrefix:@">"]) {
+			NSString *q = [[t substringFromIndex:1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+			NSMutableAttributedString *l = [[NSMutableAttributedString alloc] initWithString:@"▎ "
+					attributes:@{ NSFontAttributeName : body, NSForegroundColorAttributeName : NSColor.systemBlueColor }];
+
+			[l appendAttributedString:md_inline(q, body, NSColor.secondaryLabelColor)];
+			md_add(out, l, 6, 14, 2);
+		} else if ([t hasPrefix:@"|"]) {
+			NSString *bare = [[t stringByReplacingOccurrencesOfString:@"|" withString:@""]
+				stringByTrimmingCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@" -:"]];
+
+			if (bare.length == 0 && [t containsString:@"-"])	/* the ---|--- row */
+				continue;
+			md_add(out, [[NSAttributedString alloc] initWithString:t attributes:@{ NSFontAttributeName : mono }], 4, 0, 0);
+		} else {
+			md_add(out, md_inline(t, body, NSColor.labelColor), 0, 0, 4);
+		}
+	}
+	return out;
 }
 
 @implementation App
@@ -188,6 +321,14 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	rs.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
 	[root addSubview:rs];
 	_reportScroll = rs;
+
+	_previewScroll = [NSTextView scrollableTextView];
+	_previewText = _previewScroll.documentView;
+	_previewText.editable = NO;
+	_previewText.textContainerInset = NSMakeSize(12, 10);
+	_previewScroll.borderType = NSBezelBorder;
+	_previewScroll.hidden = YES;
+	[root addSubview:_previewScroll];
 
 	_emptyLabel = [NSTextField wrappingLabelWithString:@"아직 보이는 에이전트가 없습니다.\n\n메인 에이전트가 서브에이전트에게 일을 시키면 여기에 나타나고, 파일을 바꿀 때마다 쉬운 말로 요약이 올라옵니다."];
 	_emptyLabel.frame = NSMakeRect(28, 330, 256, 120);
@@ -300,7 +441,6 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	NSMutableDictionary<NSString *, NSNumber *> *by = [NSMutableDictionary dictionary];
 	NSString *sel = [self selectedAgent].name, *newcomer = nil;
 	NSInteger sh = -1;
-	CGFloat h = _win.contentView.bounds.size.height, w = _win.contentView.bounds.size.width, top = h - 52;
 
 	if (!_asked)
 		_asked = [NSMutableSet set];
@@ -370,10 +510,61 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 	} else {
 		_permId = nil;
 	}
+	_permUp = sh >= 0;
+	[self layoutPanes];
+	free(q);
+}
+
+/* Agents on the left; on the right the reports, with a Markdown preview below them when one is selected. */
+- (void)layoutPanes
+{
+	CGFloat h = _win.contentView.bounds.size.height, w = _win.contentView.bounds.size.width, top = h - 52;
+	CGFloat rtop = top - (_permUp ? 70 : 0), room = rtop - 44, ph = _previewShown ? MAX(150, room * 0.55) : 0;
+
 	_permBar.frame = NSMakeRect(320, top - 64, w - 332, 64);
 	_agentScroll.frame = NSMakeRect(12, 44, 300, top - 44);
-	_reportScroll.frame = NSMakeRect(320, 44, w - 332, top - 44 - (sh >= 0 ? 70 : 0));
-	free(q);
+	_reportScroll.frame = NSMakeRect(320, 44 + ph + (ph ? 6 : 0), w - 332, room - ph - (ph ? 6 : 0));
+	_previewScroll.frame = NSMakeRect(320, 44, w - 332, ph);
+	_previewScroll.hidden = !_previewShown;
+}
+
+- (void)windowDidResize:(NSNotification *)n
+{
+	[self layoutPanes];
+}
+
+/* Show the selected report's Markdown file as a rendered document. */
+- (void)updatePreview
+{
+	Report *r = [self selectedReport];
+	NSString *key = nil;
+	BOOL show = NO;
+
+	if (r.mdPath.length) {
+		NSDictionary *at = [NSFileManager.defaultManager attributesOfItemAtPath:r.mdPath error:nil];
+
+		if (at && [at fileSize] < 600000) {
+			key = [NSString stringWithFormat:@"%@:%@:%llu", r.mdPath, at.fileModificationDate, at.fileSize];
+			show = YES;
+		}
+	}
+	if (show && ![key isEqualToString:_previewKey]) {
+		NSString *text = [NSString stringWithContentsOfFile:r.mdPath encoding:NSUTF8StringEncoding error:nil];
+		NSMutableAttributedString *doc = [NSMutableAttributedString new];
+
+		[doc appendAttributedString:[[NSAttributedString alloc] initWithString:[r.mdPath.lastPathComponent stringByAppendingString:@"  ·  미리보기\n"]
+				attributes:@{ NSFontAttributeName : [NSFont systemFontOfSize:11], NSForegroundColorAttributeName : NSColor.secondaryLabelColor }]];
+		[doc appendAttributedString:render_markdown(text ?: @"(파일을 읽을 수 없습니다)")];
+		[_previewText.textStorage setAttributedString:doc];
+		[_previewText scrollRangeToVisible:NSMakeRange(0, 0)];
+		_previewKey = key;
+	}
+	if (!show)
+		_previewKey = nil;
+	if (show != _previewShown) {
+		_previewShown = show;
+		[self layoutPanes];
+	}
 }
 
 - (void)answerPerm:(BOOL)allow
@@ -511,6 +702,14 @@ static NSDictionary<NSString *, NSDictionary *> *load_status(NSMutableArray<NSSt
 		for (NSUInteger i = 0; i < files.length; i++)
 			if ([files characterAtIndex:i] == 0x1f)
 				nf++;
+		for (NSString *one in [files componentsSeparatedByString:@"\x1f"]) {
+			NSString *ext = one.pathExtension.lowercaseString;
+
+			if ([ext isEqualToString:@"md"] || [ext isEqualToString:@"markdown"]) {
+				rp.mdPath = one;
+				break;
+			}
+		}
 		rp.file = nf > 1 ? [NSString stringWithFormat:@"%ld개 파일", (long)nf] : files.lastPathComponent;
 		rp.counts = r.added >= 0 && r.removed >= 0
 				    ? [NSString stringWithFormat:@"+%ld −%ld", r.added, r.removed]
@@ -743,6 +942,7 @@ static NSString *seen_key(Agent *a)
 
 	_askReportBtn.title = isAsked ? @"요청 진행 중…" : @"보고 요청";
 	_askReportBtn.enabled = a && (a.unreported || !a.final) && !running && !isAsked;
+	[self updatePreview];
 	_ackBtn.enabled = a && [a.state isEqualToString:@"done"] && (a.unreported || !a.final);
 }
 
